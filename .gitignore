@@ -46,3 +46,4 @@ erlang.mk
 ## app specific gitignore
 
 /c_src/env.mk
+.apps.mk.*
