@@ -2,7 +2,7 @@
              [{applications,[kazoo,kazoo_amqp,kazoo_apps,kazoo_data,
                              kazoo_documents,kazoo_stdlib,kernel,lager,
                              stdlib]},
-              {description,"Registrar For the Stars"},
+              {description,"Registrar: Register For the Stars"},
               {env,[{is_kazoo_app,true}]},
               {mod,{registrar_app,[]}},
               {modules,[]},
