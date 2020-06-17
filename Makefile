@@ -1,5 +1,5 @@
 CWD = $(shell pwd -P)
-ROOT = $(realpath $(CWD)/../..)
+ROOT ?= $(realpath $(CWD)/../..)
 PROJECT = registrar
 
 all: compile
