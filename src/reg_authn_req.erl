@@ -27,31 +27,34 @@
 -spec init() -> 'ok'.
 init() -> 'ok'.
 
--spec handle_req(kz_json:object(), kz_term:proplist()) -> 'ok'.
-handle_req(JObj, _Props) ->
-    'true' = kapi_authn:req_v(JObj),
-    _ = kz_log:put_callid(JObj),
-    Realm = kz_json:get_value(<<"Auth-Realm">>, JObj, <<"missing.realm">>),
+-spec handle_req(kapi_authn:req(), kz_term:proplist()) -> 'ok'.
+handle_req(AuthnReq, _Props) ->
+    'true' = kapi_authn:req_v(AuthnReq),
+    _ = kz_log:put_callid(AuthnReq),
+    Realm = kapi_authn:get_auth_realm(AuthnReq),
     case kz_network_utils:is_ipv4(Realm)
         orelse kz_network_utils:is_ipv6(Realm)
     of
         'true' ->
             lager:debug("realm is an IP address (~s) : skipping", [Realm]);
         'false' ->
-            Username = kapi_authn:get_auth_user(JObj),
-            lager:debug("trying to authenticate ~s@~s", [Username, Realm]),
-            case lookup_auth_user(Username, Realm, JObj) of
-                {'ok', #auth_user{}=AuthUser} ->
-                    send_auth_resp(AuthUser, JObj);
-                {'error', _R} ->
-                    lager:notice("auth failure for ~s@~s: ~p"
-                                ,[Username, Realm, _R]
-                                ),
-                    send_auth_error(JObj)
-            end
+            handle_authn_realm(AuthnReq, Realm)
     end.
 
--spec send_auth_resp(auth_user(), kz_json:object()) -> 'ok'.
+handle_authn_realm(AuthnReq, Realm) ->
+    Username = kapi_authn:get_auth_user(AuthnReq),
+    lager:debug("trying to authenticate ~s@~s", [Username, Realm]),
+    case lookup_auth_user(Username, Realm, AuthnReq) of
+        {'ok', #auth_user{}=AuthUser} ->
+            send_auth_resp(AuthUser, AuthnReq);
+        {'error', _R} ->
+            lager:notice("auth failure for ~s@~s: ~p"
+                        ,[Username, Realm, _R]
+                        ),
+            send_auth_error(AuthnReq)
+    end.
+
+-spec send_auth_resp(auth_user(), kapi_authn:req()) -> 'ok'.
 send_auth_resp(#auth_user{password=Password
                          ,username=Username
                          ,method=Method
@@ -60,15 +63,15 @@ send_auth_resp(#auth_user{password=Password
                          ,register_overwrite_notify=RegisterOverwrite
                          ,nonce=Nonce
                          }=AuthUser
-              ,JObj
+              ,AuthnReq
               ) ->
-    Category = kz_json:get_value(<<"Event-Category">>, JObj),
+    Category = kz_api:event_category(AuthnReq),
     Resp = props:filter_undefined(
-             [{<<"Msg-ID">>, kz_json:get_value(<<"Msg-ID">>, JObj)}
+             [{<<"Msg-ID">>, kz_api:msg_id(AuthnReq)}
              ,{<<"Auth-Password">>, Password}
              ,{<<"Auth-Method">>, get_auth_method(Method)}
              ,{<<"Auth-Nonce">>, Nonce}
-             ,{<<"Expires">>, kz_json:get_value(<<"Expires">>,JObj)}
+             ,{<<"Expires">>, kz_json:get_value(<<"Expires">>, AuthnReq)}
              ,{<<"Suppress-Unregister-Notifications">>, SupressUnregister}
              ,{<<"Register-Overwrite-Notify">>, RegisterOverwrite}
              ,{<<"Custom-Channel-Vars">>, create_ccvs(AuthUser)}
@@ -76,38 +79,50 @@ send_auth_resp(#auth_user{password=Password
               | kz_api:default_headers(Category, <<"authn_resp">>, ?APP_NAME, ?APP_VERSION)
              ]),
     lager:info("sending SIP authentication reply, with credentials for user ~s@~s",[Username,Realm]),
-    kapi_authn:publish_resp(kz_json:get_value(<<"Server-ID">>, JObj), Resp).
+    kapi_authn:publish_resp(kz_api:server_id(AuthnReq), Resp).
 
--spec send_auth_error(kz_json:object()) -> 'ok'.
-send_auth_error(JObj) ->
+-spec send_auth_error(kapi_authn:req()) -> 'ok'.
+send_auth_error(AuthnReq) ->
     %% NOTE: Kamailio needs registrar errors since it is blocking with no
     %%   timeout (at the moment) but when we seek auth for INVITEs we need
     %%   to wait for conferences, etc.  Since Kamailio does not honor
     %%   Defer-Response we can use that flag on registrar errors
     %%   to queue in Kazoo but still advance Kamailio.
-    Resp = [{<<"Msg-ID">>, kz_json:get_value(<<"Msg-ID">>, JObj)}
+    Resp = [{<<"Msg-ID">>, kz_api:msg_id(AuthnReq)}
            ,{<<"Defer-Response">>, <<"true">>}
             | kz_api:default_headers(?APP_NAME, ?APP_VERSION)
            ],
     lager:debug("sending SIP authentication error"),
-    kapi_authn:publish_error(kz_json:get_value(<<"Server-ID">>, JObj), Resp).
+    kapi_authn:publish_error(kz_api:server_id(AuthnReq), Resp).
 
 -spec create_ccvs(auth_user()) -> kz_json:object().
-create_ccvs(#auth_user{doc=JObj}=AuthUser) ->
+create_ccvs(#auth_user{doc=JObj
+                      ,account_id=AccountId
+                      ,account_name=AccountName
+                      ,account_normalized_realm=NormalizedRealm
+                      ,authorizing_id=AuthorizingId
+                      ,authorizing_type=AuthorizingType
+                      ,method=Method
+                      ,owner_id=OwnerId
+                      ,realm=Realm
+                      ,register_overwrite_notify=OverwriteNotify
+                      ,suppress_unregister_notifications=Suppress
+                      ,username=Username
+                      }=AuthUser) ->
     kz_json:from_list(
-      [{<<"Username">>, AuthUser#auth_user.username}
-      ,{<<"Realm">>, AuthUser#auth_user.realm}
-      ,{<<"Account-ID">>, AuthUser#auth_user.account_id}
-      ,{<<"Authorizing-ID">>, AuthUser#auth_user.authorizing_id}
-      ,{<<"Authorizing-Type">>, AuthUser#auth_user.authorizing_type}
-      ,{<<"Owner-ID">>, AuthUser#auth_user.owner_id}
-      ,{<<"Account-Realm">>, AuthUser#auth_user.account_normalized_realm}
-      ,{<<"Account-Name">>, AuthUser#auth_user.account_name}
+      [{<<"Account-ID">>, AccountId}
+      ,{<<"Account-Name">>, AccountName}
+      ,{<<"Account-Realm">>, NormalizedRealm}
+      ,{<<"Authorizing-ID">>, AuthorizingId}
+      ,{<<"Authorizing-Type">>, AuthorizingType}
+      ,{<<"Owner-ID">>, OwnerId}
       ,{<<"Presence-ID">>, maybe_get_presence_id(AuthUser)}
-      ,{<<"Suppress-Unregister-Notifications">>, AuthUser#auth_user.suppress_unregister_notifications}
-      ,{<<"Register-Overwrite-Notify">>, AuthUser#auth_user.register_overwrite_notify}
       ,{<<"Pusher-Application">>, kz_json:get_value([<<"push">>, <<"Token-App">>], JObj)}
-       | (create_specific_ccvs(AuthUser, AuthUser#auth_user.method)
+      ,{<<"Realm">>, Realm}
+      ,{<<"Register-Overwrite-Notify">>, OverwriteNotify}
+      ,{<<"Suppress-Unregister-Notifications">>, Suppress}
+      ,{<<"Username">>, Username}
+       | (create_specific_ccvs(AuthUser, Method)
           ++ generate_security_ccvs(AuthUser)
           ++ maybe_add_hotdesk_current_id(AuthUser))
       ]).
@@ -159,7 +174,8 @@ create_custom_sip_headers(?GSM_ANY_METHOD
                                     ,account_realm=AccountRealm
                                     ,realm=Realm
                                     ,username=Username
-                                    }) ->
+                                    }
+                         ) ->
     create_custom_sip_headers(
       props:filter_undefined(
         [{<<"P-GSM-Kc">>, KC}
@@ -184,13 +200,13 @@ get_tel_uri(Number) -> <<"<tel:", Number/binary,">">>.
 %% @doc look up the user and realm in the database and return the result
 %% @end
 %%------------------------------------------------------------------------------
--spec lookup_auth_user(kz_term:ne_binary(), kz_term:ne_binary(), kz_json:object()) ->
+-spec lookup_auth_user(kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) ->
           {'ok', auth_user()} |
           {'error', any()}.
-lookup_auth_user(Username, Realm, Req) ->
+lookup_auth_user(Username, Realm, AuthnReq) ->
     case get_auth_user(Username, Realm) of
         {'error', _}=E -> E;
-        {'ok', JObj} -> check_auth_user(JObj, Username, Realm, Req)
+        {'ok', ViewResult} -> check_auth_user(ViewResult, Username, Realm, AuthnReq)
     end.
 
 -spec get_auth_user(kz_term:ne_binary(), kz_term:ne_binary()) ->
@@ -215,24 +231,25 @@ get_auth_user(Username, Realm) ->
           {'ok', kz_json:object()} |
           {'error', 'not_found'}.
 get_auth_user_in_agg(Username, Realm) ->
+    get_auth_user_in_agg(Username, Realm, kapps_config:get_is_true(?CONFIG_CAT, <<"use_aggregate">>, 'true')).
+
+get_auth_user_in_agg(_Username, _Realm, 'false') ->
+    lager:debug("SIP credential aggregate db is disabled"),
+    {'error', 'not_found'};
+get_auth_user_in_agg(Username, Realm, 'true') ->
     ViewOptions = [{'key', [Realm, Username]}
                   ,'include_docs'
                   ],
-    case kapps_config:get_is_true(?CONFIG_CAT, <<"use_aggregate">>, 'true')
-        andalso kz_datamgr:get_results(?KZ_SIP_DB, <<"credentials/lookup">>, ViewOptions)
-    of
-        'false' ->
-            lager:debug("SIP credential aggregate db is disabled"),
-            {'error', 'not_found'};
+    case kz_datamgr:get_results(?KZ_SIP_DB, <<"credentials/lookup">>, ViewOptions) of
         {'error', _R} ->
             lager:warning("failed to look up SIP credentials ~p in aggregate", [_R]),
             {'error', 'not_found'};
         {'ok', []} ->
             lager:debug("~s@~s not found in aggregate", [Username, Realm]),
             {'error', 'not_found'};
-        {'ok', [User|_]} ->
+        {'ok', [ViewResult|_]} ->
             lager:debug("~s@~s found in aggregate", [Username, Realm]),
-            {'ok', User}
+            {'ok', ViewResult}
     end.
 
 -spec get_auth_user_in_account(kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary()) ->
@@ -249,52 +266,52 @@ get_auth_user_in_account(Username, Realm, AccountDB) ->
         {'ok', []} ->
             lager:debug("~s@~s not found in ~s", [Username, Realm, AccountDB]),
             get_auth_user_in_agg(Username, Realm);
-        {'ok', [User|_]} ->
+        {'ok', [ViewResult|_]} ->
             lager:debug("~s@~s found in account db: ~s", [Username, Realm, AccountDB]),
-            {'ok', User}
+            {'ok', ViewResult}
     end.
 
 %%------------------------------------------------------------------------------
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec check_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kz_json:object()) ->
+-spec check_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) ->
           {'ok', auth_user()} |
           {'error', 'disabled'}.
-check_auth_user(JObj, Username, Realm, Req) ->
-    Things = [{<<"account">>, get_account_id(JObj)}
-             ,{kz_json:get_value([<<"doc">>, <<"pvt_type">>], JObj), kz_doc:id(JObj)}
-             ,{<<"owner">>, kz_json:get_value([<<"doc">>, <<"owner_id">>], JObj)}
+check_auth_user(ViewResult, Username, Realm, AuthnReq) ->
+    Things = [{<<"account">>, get_account_id(ViewResult)}
+             ,{kz_json:get_value([<<"doc">>, <<"pvt_type">>], ViewResult), kz_doc:id(ViewResult)}
+             ,{<<"owner">>, kz_json:get_value([<<"doc">>, <<"owner_id">>], ViewResult)}
              ],
     case kapps_util:are_all_enabled(Things) of
-        'true' -> jobj_to_auth_user(JObj, Username, Realm, Req);
+        'true' -> jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq);
         {'false', Reason} ->
             lager:notice("rejecting authn for ~p", [Reason]),
             {'error', 'disabled'}
     end.
 
--spec jobj_to_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kz_json:object()) ->
+-spec jobj_to_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) ->
           {'ok', auth_user()} |
           {'error', any()}.
-jobj_to_auth_user(JObj, Username, Realm, Req) ->
-    AuthValue = get_auth_value(JObj),
-    AuthDoc = kz_json:get_value(<<"doc">>, JObj),
+jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq) ->
+    SIPSettings = get_auth_value(ViewResult),
+    AuthDoc = kz_json:get_json_value(<<"doc">>, ViewResult),
     Method = get_auth_method(AuthDoc),
     AuthUser = #auth_user{realm = Realm
                          ,username = Username
                          ,account_id = get_account_id(AuthDoc)
                          ,account_db = get_account_db(AuthDoc)
-                         ,password = kz_json:get_value(<<"password">>, AuthValue, kz_binary:rand_hex(6))
+                         ,password = kz_json:get_value(<<"password">>, SIPSettings, kz_binary:rand_hex(6))
                          ,authorizing_type = get_auth_type(AuthDoc)
-                         ,authorizing_id = kz_doc:id(JObj)
+                         ,authorizing_id = kz_doc:id(ViewResult)
                          ,method = kz_term:to_lower_binary(Method)
-                         ,owner_id = kz_json:get_value(<<"owner_id">>, AuthDoc)
-                         ,suppress_unregister_notifications = kz_json:is_true(<<"suppress_unregister_notifications">>, AuthDoc)
-                         ,register_overwrite_notify = kz_json:is_true(<<"register_overwrite_notify">>, AuthDoc)
+                         ,owner_id = kzd_devices:owner_id(AuthDoc)
+                         ,suppress_unregister_notifications = kzd_devices:suppress_unregister_notifications(AuthDoc)
+                         ,register_overwrite_notify = kzd_devices:register_overwrite_notify(AuthDoc)
                          ,doc=AuthDoc
-                         ,request=Req
+                         ,request=AuthnReq
                          },
-    maybe_auth_method(add_account_name(AuthUser), AuthDoc, Req, Method).
+    maybe_auth_method(add_account_name(AuthUser), AuthDoc, AuthnReq, Method).
 
 -spec get_auth_type(kz_json:object()) -> kz_term:ne_binary().
 get_auth_type(AuthDoc) ->
@@ -334,19 +351,19 @@ get_auth_method(JObj) ->
                              ,<<"password">>
                              ).
 
--spec maybe_auth_method(auth_user(), kz_json:object(), kz_json:object(), kz_term:ne_binary()) ->
+-spec maybe_auth_method(auth_user(), kz_json:object(), kapi_authn:req(), kz_term:ne_binary()) ->
           {'ok', auth_user()} |
           {'error', any()}.
-maybe_auth_method(AuthUser, JObj, Req, ?GSM_ANY_METHOD)->
+maybe_auth_method(AuthUser, JObj, AuthnReq, ?GSM_ANY_METHOD)->
     GsmDoc = kz_json:get_value(<<"gsm">>, JObj),
     CachedNonce = kz_json:get_value(<<"nonce">>, GsmDoc, kz_binary:rand_hex(16)),
     Nonce = remove_dashes(
-              kz_json:get_first_defined([<<"nonce">>, <<"Auth-Nonce">>], Req, CachedNonce)
+              kz_json:get_first_defined([<<"nonce">>, <<"Auth-Nonce">>], AuthnReq, CachedNonce)
              ),
     GsmKey = kz_json:get_value(<<"key">>, GsmDoc),
     GsmSRes = kz_json:get_value(<<"sres">>, GsmDoc, kz_binary:rand_hex(6)),
     GsmNumber = kz_json:get_value(<<"msisdn">>, GsmDoc),
-    ReqMethod = kz_json:get_value(<<"Method">>, Req),
+    ReqMethod = kz_json:get_value(<<"Method">>, AuthnReq),
     gsm_auth(
       maybe_update_gsm(ReqMethod
                       ,AuthUser#auth_user{msisdn=GsmNumber
@@ -485,7 +502,10 @@ maybe_enforce_security({#auth_user{doc=JObj}=User, Acc}) ->
     case kz_json:is_true([<<"media">>
                          ,<<"encryption">>
                          ,<<"enforce_security">>
-                         ], JObj, 'false')
+                         ]
+                        ,JObj
+                        ,'false'
+                        )
     of
         'true' -> {User, [{<<"Media-Encryption-Enforce-Security">>, 'true'} | Acc]};
         'false' -> {User, Acc}
