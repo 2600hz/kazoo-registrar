@@ -76,7 +76,7 @@ send_auth_resp(#auth_user{password=Password
              ,{<<"Register-Overwrite-Notify">>, RegisterOverwrite}
              ,{<<"Custom-Channel-Vars">>, create_ccvs(AuthUser)}
              ,{<<"Custom-SIP-Headers">>, create_custom_sip_headers(Method, AuthUser)}
-              | kz_api:default_headers(Category, <<"authn_resp">>, ?APP_NAME, ?APP_VERSION)
+             | kz_api:default_headers(Category, <<"authn_resp">>, ?APP_NAME, ?APP_VERSION)
              ]),
     lager:info("sending SIP authentication reply, with credentials for user ~s@~s",[Username,Realm]),
     kapi_authn:publish_resp(kz_api:server_id(AuthnReq), Resp).
@@ -90,7 +90,7 @@ send_auth_error(AuthnReq) ->
     %%   to queue in Kazoo but still advance Kamailio.
     Resp = [{<<"Msg-ID">>, kz_api:msg_id(AuthnReq)}
            ,{<<"Defer-Response">>, <<"true">>}
-            | kz_api:default_headers(?APP_NAME, ?APP_VERSION)
+           | kz_api:default_headers(?APP_NAME, ?APP_VERSION)
            ],
     lager:debug("sending SIP authentication error"),
     kapi_authn:publish_error(kz_api:server_id(AuthnReq), Resp).
@@ -122,9 +122,9 @@ create_ccvs(#auth_user{doc=JObj
       ,{<<"Register-Overwrite-Notify">>, OverwriteNotify}
       ,{<<"Suppress-Unregister-Notifications">>, Suppress}
       ,{<<"Username">>, Username}
-       | (create_specific_ccvs(AuthUser, Method)
-          ++ generate_security_ccvs(AuthUser)
-          ++ maybe_add_hotdesk_current_id(AuthUser))
+      | (create_specific_ccvs(AuthUser, Method)
+         ++ generate_security_ccvs(AuthUser)
+         ++ maybe_add_hotdesk_current_id(AuthUser))
       ]).
 
 -spec maybe_get_presence_id(auth_user()) -> kz_term:api_binary().
