@@ -36,7 +36,7 @@
                      ,[{<<"dialplan">>, <<"route_req">>}]
                      }
                     ]).
--define(BINDINGS, [{'authn', []}
+-define(BINDINGS, [{'authn', [{'restrict_to', ['authn_reg']}]}
                   ,{'route', [{'types', ?RESOURCE_TYPES_HANDLED}
                              ,{'restrict_to', ['no_account']}
                              ]
