@@ -29,6 +29,8 @@
 
 -define(SERVER, ?MODULE).
 
+-define(AUTHN_ALT_KEY_PREFIX, <<"authn.endpoint.req.">>).
+
 -define(RESPONDERS, [{'reg_authn_req'
                      ,[{<<"directory">>, <<"authn_req">>}]
                      }
@@ -36,7 +38,13 @@
                      ,[{<<"dialplan">>, <<"route_req">>}]
                      }
                     ]).
--define(BINDINGS, [{'authn', [{'restrict_to', ['authn_reg']}]}
+-define(BINDINGS, [{'authn', [{'restrict_to', ['authn_routes']}
+                             ,{'routes', [{authn_reg, []}
+                                         ,{authn_req, []}
+                                         ,{authn_reg, [{routing, ?AUTHN_ALT_KEY_PREFIX}]}
+                                         ,{authn_req, [{routing, ?AUTHN_ALT_KEY_PREFIX}]}
+                                         ]}
+                             ]}
                   ,{'route', [{'types', ?RESOURCE_TYPES_HANDLED}
                              ,{'restrict_to', ['no_account']}
                              ]
