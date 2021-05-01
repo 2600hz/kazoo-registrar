@@ -49,7 +49,6 @@
                              ,{'restrict_to', ['no_account']}
                              ]
                    }
-                  ,{'self', []}
                   ]).
 -define(REG_QUEUE_NAME, <<"registrar_listener">>).
 -define(REG_QUEUE_OPTIONS, [{'exclusive', 'false'}]).
