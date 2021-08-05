@@ -29,7 +29,7 @@
 
 -define(SERVER, ?MODULE).
 
--define(AUTHN_ALT_KEY_PREFIX, <<"authn.endpoint.req.">>).
+-define(AUTHN_ALT_KEY_PREFIX, <<"authn.endpoint.req">>).
 
 -define(RESPONDERS, [{'reg_authn_req'
                      ,[{<<"directory">>, <<"authn_req">>}]
