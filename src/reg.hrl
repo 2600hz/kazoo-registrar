@@ -32,6 +32,7 @@
                    ,request :: kz_term:api_object()
                    }).
 -type auth_user() :: #auth_user{}.
+-type auth_response() :: {'ok', auth_user()} | {'error', any()}.
 
 -define(GSM_CACHED_METHOD, <<"gsm_cached">>).
 -define(GSM_A3A8_METHOD, <<"gsm_a3a8">>).

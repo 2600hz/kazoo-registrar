@@ -1,5 +1,5 @@
 %%%-----------------------------------------------------------------------------
-%%% @copyright (C) 2011-2020, 2600Hz
+%%% @copyright (C) 2011-2022, 2600Hz
 %%% @doc Handle authn_req messages
 %%% @author James Aimonetti
 %%% @author Luis Azedo
@@ -23,6 +23,7 @@
                                       ,{<<"ZRTP-Enrollment">>, 'true'}
                                       ]}
                         ]).
+-define(INTEGRATION_DEVICE_TYPES, [<<"ms_teams">>]).
 
 -spec init() -> 'ok'.
 init() -> 'ok'.
@@ -48,9 +49,7 @@ handle_authn_realm(AuthnReq, Realm) ->
         {'ok', #auth_user{}=AuthUser} ->
             send_auth_resp(AuthUser, AuthnReq);
         {'error', _R} ->
-            lager:notice("auth failure for ~s@~s: ~p"
-                        ,[Username, Realm, _R]
-                        ),
+            lager:notice("auth failure for ~s@~s: ~p", [Username, Realm, _R]),
             send_auth_error(AuthnReq)
     end.
 
@@ -67,15 +66,15 @@ send_auth_resp(#auth_user{password=Password
               ) ->
     Category = kz_api:event_category(AuthnReq),
     Resp = props:filter_undefined(
-             [{<<"Msg-ID">>, kz_api:msg_id(AuthnReq)}
-             ,{<<"Auth-Password">>, Password}
-             ,{<<"Auth-Method">>, get_auth_method(Method)}
+             [{<<"Auth-Method">>, get_auth_method(Method)}
              ,{<<"Auth-Nonce">>, Nonce}
-             ,{<<"Expires">>, kz_json:get_value(<<"Expires">>, AuthnReq)}
-             ,{<<"Suppress-Unregister-Notifications">>, SupressUnregister}
-             ,{<<"Register-Overwrite-Notify">>, RegisterOverwrite}
+             ,{<<"Auth-Password">>, Password}
              ,{<<"Custom-Channel-Vars">>, create_ccvs(AuthUser)}
              ,{<<"Custom-SIP-Headers">>, create_custom_sip_headers(Method, AuthUser)}
+             ,{<<"Expires">>, kz_json:get_integer_value(<<"Expires">>, AuthnReq)}
+             ,{<<"Msg-ID">>, kz_api:msg_id(AuthnReq)}
+             ,{<<"Register-Overwrite-Notify">>, RegisterOverwrite}
+             ,{<<"Suppress-Unregister-Notifications">>, SupressUnregister}
              | kz_api:default_headers(Category, <<"authn_resp">>, ?APP_NAME, ?APP_VERSION)
              ]),
     lager:info("sending SIP authentication reply, with credentials for user ~s@~s",[Username,Realm]),
@@ -124,7 +123,8 @@ create_ccvs(#auth_user{doc=JObj
       ,{<<"Username">>, Username}
       | (create_specific_ccvs(AuthUser, Method)
          ++ generate_security_ccvs(AuthUser)
-         ++ maybe_add_hotdesk_current_id(AuthUser))
+         ++ maybe_add_hotdesk_current_id(AuthUser)
+        )
       ]).
 
 -spec maybe_get_presence_id(auth_user()) -> kz_term:api_binary().
@@ -178,11 +178,11 @@ create_custom_sip_headers(?GSM_ANY_METHOD
                          ) ->
     create_custom_sip_headers(
       props:filter_undefined(
-        [{<<"P-GSM-Kc">>, KC}
-        ,{<<"P-GSM-SRes">>, SRES}
-        ,{<<"P-Asserted-Identity">>, <<"<sip:", Username/binary, "@", Realm/binary, ">">>}
-        ,{<<"P-Associated-URI">>, get_tel_uri(Number)}
+        [{<<"P-Asserted-Identity">>, <<"<sip:", Username/binary, "@", Realm/binary, ">">>}
         ,{<<"P-Associated-URI">>, <<"<sip:", Username/binary, "@", AccountRealm/binary, ">">>}
+        ,{<<"P-Associated-URI">>, get_tel_uri(Number)}
+        ,{<<"P-GSM-Kc">>, KC}
+        ,{<<"P-GSM-SRes">>, SRES}
         ,{<<"P-Kazoo-Primary-Number">>, Number}
         ])
      );
@@ -200,13 +200,13 @@ get_tel_uri(Number) -> <<"<tel:", Number/binary,">">>.
 %% @doc look up the user and realm in the database and return the result
 %% @end
 %%------------------------------------------------------------------------------
--spec lookup_auth_user(kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) ->
-          {'ok', auth_user()} |
-          {'error', any()}.
+-spec lookup_auth_user(kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
 lookup_auth_user(Username, Realm, AuthnReq) ->
     case get_auth_user(Username, Realm) of
         {'error', _}=E -> E;
-        {'ok', ViewResult} -> check_auth_user(ViewResult, Username, Realm, AuthnReq)
+        {'ok', ViewResult} ->
+            AuthUser = check_auth_user(ViewResult, Username, Realm, AuthnReq),
+            maybe_perform_integration_device_checks(AuthUser, ViewResult, AuthnReq)
     end.
 
 -spec get_auth_user(kz_term:ne_binary(), kz_term:ne_binary()) ->
@@ -275,41 +275,38 @@ get_auth_user_in_account(Username, Realm, AccountDB) ->
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec check_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) ->
-          {'ok', auth_user()} |
-          {'error', 'disabled'}.
+-spec check_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
 check_auth_user(ViewResult, Username, Realm, AuthnReq) ->
     Things = [{<<"account">>, get_account_id(ViewResult)}
              ,{kz_json:get_value([<<"doc">>, <<"pvt_type">>], ViewResult), kz_doc:id(ViewResult)}
              ,{<<"owner">>, kz_json:get_value([<<"doc">>, <<"owner_id">>], ViewResult)}
              ],
     case kapps_util:are_all_enabled(Things) of
-        'true' -> jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq);
+        'true' ->
+            jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq);
         {'false', Reason} ->
-            lager:notice("rejecting authn for ~p", [Reason]),
+            lager:notice("rejecting authn because ~p", [Reason]),
             {'error', 'disabled'}
     end.
 
--spec jobj_to_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) ->
-          {'ok', auth_user()} |
-          {'error', any()}.
+-spec jobj_to_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
 jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq) ->
     SIPSettings = get_auth_value(ViewResult),
     AuthDoc = kz_json:get_json_value(<<"doc">>, ViewResult),
     Method = get_auth_method(AuthDoc),
-    AuthUser = #auth_user{realm = Realm
-                         ,username = Username
+    AuthUser = #auth_user{account_db = get_account_db(AuthDoc)
                          ,account_id = get_account_id(AuthDoc)
-                         ,account_db = get_account_db(AuthDoc)
-                         ,password = kz_json:get_value(<<"password">>, SIPSettings, kz_binary:rand_hex(6))
-                         ,authorizing_type = get_auth_type(AuthDoc)
                          ,authorizing_id = kz_doc:id(ViewResult)
+                         ,authorizing_type = get_auth_type(AuthDoc)
+                         ,doc=AuthDoc
                          ,method = kz_term:to_lower_binary(Method)
                          ,owner_id = kzd_devices:owner_id(AuthDoc)
-                         ,suppress_unregister_notifications = kzd_devices:suppress_unregister_notifications(AuthDoc)
+                         ,password = kz_json:get_ne_binary_value(<<"password">>, SIPSettings, kz_binary:rand_hex(6))
+                         ,realm = Realm
                          ,register_overwrite_notify = kzd_devices:register_overwrite_notify(AuthDoc)
-                         ,doc=AuthDoc
                          ,request=AuthnReq
+                         ,suppress_unregister_notifications = kzd_devices:suppress_unregister_notifications(AuthDoc)
+                         ,username = Username
                          },
     maybe_auth_method(add_account_name(AuthUser), AuthDoc, AuthnReq, Method).
 
@@ -351,9 +348,7 @@ get_auth_method(JObj) ->
                              ,<<"password">>
                              ).
 
--spec maybe_auth_method(auth_user(), kz_json:object(), kapi_authn:req(), kz_term:ne_binary()) ->
-          {'ok', auth_user()} |
-          {'error', any()}.
+-spec maybe_auth_method(auth_user(), kz_json:object(), kapi_authn:req(), kz_term:ne_binary()) -> auth_response().
 maybe_auth_method(AuthUser, JObj, AuthnReq, ?GSM_ANY_METHOD)->
     GsmDoc = kz_json:get_value(<<"gsm">>, JObj),
     CachedNonce = kz_json:get_value(<<"nonce">>, GsmDoc, kz_binary:rand_hex(16)),
@@ -375,6 +370,133 @@ maybe_auth_method(AuthUser, JObj, AuthnReq, ?GSM_ANY_METHOD)->
      );
 maybe_auth_method(AuthUser, _JObj, _Req, ?ANY_AUTH_METHOD)->
     {'ok', AuthUser}.
+
+%%------------------------------------------------------------------------------
+%% @doc If device_type=softphone or any integration services device type, some
+%% checks are performed. If softphone, Kazoo needs to check the register request
+%% is not from an integration service (integration_as_softphone). If not softphone
+%% but an actual integration service; request's User Agent needs to be whitelisted
+%% via User Agent regexes list (request_user_agent) and also the request's source
+%% IP needs to be whitelisted as well and not denied (request_source_ip).
+%% @end
+%%------------------------------------------------------------------------------
+-spec maybe_perform_integration_device_checks(auth_response(), kz_json:object(), kapi_authn:req()) -> auth_response().
+maybe_perform_integration_device_checks({'ok', _AuthUser} = Ret, ViewResult, AuthnReq) ->
+    DeviceType = kzd_devices:device_type(kz_json:get_json_value(<<"doc">>, ViewResult)),
+    case lists:member(DeviceType, [<<"softphone">> | ?INTEGRATION_DEVICE_TYPES]) of
+        'false' ->
+            lager:debug("not a softphone device nor an integration service device, not need to run checks"),
+            Ret;
+        'true' ->
+            perform_integration_device_checks(Ret, AuthnReq, DeviceType)
+    end;
+maybe_perform_integration_device_checks({'error', _Reason} = AuthFailed, _ViewResult, _AuthnReq) ->
+    AuthFailed.
+
+perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
+    lager:debug("~s device trying to register, running checks", [DeviceType]),
+    SourceIP = kz_json:get_ne_binary_value(<<"Orig-IP">>, AuthnReq),
+    UserAgent = kz_json:get_ne_binary_value(<<"User-Agent">>, AuthnReq),
+    UARegexes = kapps_config:get_ne_binaries(?CONFIG_CAT, <<"integrations_user_agent_regexes">>, []),
+    {'ok', MP} = re:compile(kz_binary:join(UARegexes, <<"|">>)), %% <<"regex1|regex2|regexn">> before regex compilation
+    %% If any of the checks fail, the remaining ones are not executed.
+    Checks = [fun check_integration_as_softphone/5 %% if integration_as_softphone, forbid registration.
+             ,fun check_request_user_agent/5 %% if not softphone, check user agent (integration service) is whitelisted.
+             ,fun check_request_source_ip/5 %% check request's source IP is allowed and not denied to register.
+             ],
+    lists:foldl(fun(F, Acc) -> F(Acc, DeviceType, SourceIP, UserAgent, MP) end
+               ,maybe_undefined_user_agent(Ret, UserAgent)
+               ,Checks
+               ).
+
+-spec maybe_undefined_user_agent(auth_response(), kz_term:api_ne_binary()) -> auth_response().
+maybe_undefined_user_agent(_AuthResponse, 'undefined') ->
+    lager:debug("not user agent provided within the register request, denying registration"),
+    {'error', 'invalid_user_agent'};
+maybe_undefined_user_agent(AuthResponse, _UserAgent) ->
+    AuthResponse.
+
+%%------------------------------------------------------------------------------
+%% @doc Checks if an "integration" (MS Teams, residential) device is trying to register
+%% as a softphone device (which is forbidden).
+%%
+%% If device_type = `softphone' and request's User-Agent matches any of the integration services'
+%% user-agent regexes, forbid registration.
+%% @end
+%%------------------------------------------------------------------------------
+-spec check_integration_as_softphone(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
+check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, UserAgent, CompiledRegex) ->
+    lager:debug("checking if user agent (~s) is not from an integration service", [UserAgent]),
+    case re:run(UserAgent, CompiledRegex, ['notempty']) of
+        {'match', _} ->
+            lager:debug("trying to register '~s' integration device as a softphone, forbidden", [UserAgent]),
+            {'error', 'integration_as_softphone'};
+        'nomatch' ->
+            lager:debug("'~s' seems to be a regular softphone client, continue", [UserAgent]),
+            Ret
+    end;
+check_integration_as_softphone({'ok', _AuthUser} = Ret, _IntegrationDevice, _SourceIP, _UserAgent, _CompiledRegex) ->
+    lager:debug("integration device '~s' not using a softphone to register, continue", [_IntegrationDevice]),
+    Ret;
+check_integration_as_softphone({'error', _Reason} = AuthFailed, _DeviceType, _SourceIP, _UserAgent, _CompiledRegex) ->
+    AuthFailed.
+
+%%------------------------------------------------------------------------------
+%% @doc If device_type=softphone and it is not an intent to use a softphone device
+%% register an integration service device, let it continue without checking UA.
+%%
+%% If not a softphone, it is an integration service device, check its UA matches
+%% any of the user agent regexes within the configuration.
+%% @end
+%%------------------------------------------------------------------------------
+-spec check_request_user_agent(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
+check_request_user_agent(Ret, <<"softphone">>, _SourceIP, _UserAgent, _CompiledRegex) ->
+    %% Only check User Agent for integration services devices.
+    Ret;
+check_request_user_agent({'ok', _AuthUser} = Ret, _DeviceType, _SourceIP, UserAgent, CompiledRegex) ->
+    lager:debug("checking request's user agent (integration service) is allowed to register"),
+    case re:run(UserAgent, CompiledRegex, ['notempty']) of
+        'nomatch' ->
+            lager:debug("'~s' is not whitelisted, denying registration", [UserAgent]),
+            {'error', 'not_allowed'};
+        {'match', _} ->
+            lager:debug("'~s' user agent is whitelisted, continue", [UserAgent]),
+            Ret
+    end;
+check_request_user_agent({'error', _Reason} = AuthFailed, _DeviceType, _SourceIP, _UserAgent, _CompiledRegex) ->
+    AuthFailed.
+
+%%------------------------------------------------------------------------------
+%% @doc If user_auth was successful, device_type is "ms_teams" and source_ip is
+%% allowed and not on the denied list, allow the registration, deny the
+%% registration otherwise.
+%% @end
+%%------------------------------------------------------------------------------
+-spec check_request_source_ip(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
+check_request_source_ip({'ok', _AuthUser} = Ret, DeviceType, SourceIP, _UserAgent, _CompiledRegex) ->
+    lager:debug("checking request's source IP: ~s", [SourceIP]),
+    ACL = access_control(DeviceType),
+    case lists:member(SourceIP, kz_json:get_ne_binaries(<<"deny">>, ACL, []))
+        orelse not lists:member(SourceIP, kz_json:get_ne_binaries(<<"allow">>, ACL, []))
+    of
+        'true' ->
+            lager:debug("~s denied or not allowed, denying registration", [SourceIP]),
+            {'error', 'not_allowed'};
+        'false' ->
+            lager:debug("~s allowed, continue", [SourceIP]),
+            Ret
+    end;
+check_request_source_ip({'error', _Reason} = AuthFailed, _DeviceType, _SourceIP, _UserAgent, _CompiledRegex) ->
+    AuthFailed.
+
+-spec access_control(kz_term:ne_binary()) -> kz_json:object().
+access_control(AuthOrDeviceType) ->
+    Default = kapps_config:get_json(?CONFIG_CAT
+                                   ,[<<"access_control">>, <<"default">>]
+                                   ,kz_json:from_list([{<<"allow">>, []}, {<<"deny">>, []}])
+                                   ),
+    kapps_config:get_json(?CONFIG_CAT, [<<"access_control">>, AuthOrDeviceType], Default).
+
 
 -define(GSM_PRE_REGISTER_ROUTINES, [fun maybe_msisdn/1]).
 -define(GSM_REGISTER_ROUTINES, [fun maybe_msisdn/1]).
