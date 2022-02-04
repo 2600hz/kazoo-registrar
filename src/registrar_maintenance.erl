@@ -1,5 +1,5 @@
 %%%-----------------------------------------------------------------------------
-%%% @copyright (C) 2011-2020, 2600Hz
+%%% @copyright (C) 2011-2022, 2600Hz
 %%% @doc
 %%% @author Karl Anderson
 %%%
@@ -39,7 +39,7 @@ pretty_print_device_by_ip([{Key, Value}|Props]) ->
 set_listeners(Count) when is_binary(Count) ->
     set_listeners(kz_term:to_integer(Count));
 set_listeners(Count) ->
-    kapps_config:set(?CONFIG_CAT, <<"listeners">>, Count),
+    _ = kapps_config:set(?CONFIG_CAT, <<"listeners">>, Count),
     registrar_shared_listener_sup:set_listeners(Count).
 
 -spec register_views() -> 'ok'.

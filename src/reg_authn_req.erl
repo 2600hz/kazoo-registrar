@@ -473,6 +473,9 @@ check_request_user_agent({'error', _Reason} = AuthFailed, _DeviceType, _SourceIP
 %% @end
 %%------------------------------------------------------------------------------
 -spec check_request_source_ip(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
+check_request_source_ip({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, _UserAgent, _CompiledRegex) ->
+    %% Only check Source IP for integration services devices.
+    Ret;
 check_request_source_ip({'ok', _AuthUser} = Ret, DeviceType, SourceIP, _UserAgent, _CompiledRegex) ->
     lager:debug("checking request's source IP: ~s", [SourceIP]),
     ACL = access_control(DeviceType),
