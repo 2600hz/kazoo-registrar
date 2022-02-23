@@ -41,7 +41,7 @@ nif_stub_error(Line) ->
 
 -spec load_nif() -> 'ok' | {'error', {atom(), string()}}.
 load_nif() ->
-    PrivDir = case code:priv_dir(?MODULE) of
+    PrivDir = case code:priv_dir(?APP) of
                   {'error', _} ->
                       EbinDir = filename:dirname(code:which(?MODULE)),
                       AppPath = filename:dirname(EbinDir),
