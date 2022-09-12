@@ -465,7 +465,7 @@ do_migrate_softphone_to_ms_teams(Ret) ->
 do_migrate_softphone_to_ms_teams({'ok', #auth_user{doc = Doc} = AU} = Ret, Try, MaxTries)
   when Try < MaxTries ->
     DocId = kz_doc:id(Doc),
-    MSTeamsDoc = kz_json:merge(Doc, kzd_devices:ms_teams_device_defaults()),
+    MSTeamsDoc = kz_json:merge(Doc, ms_teams_device_defaults()),
     case kz_datamgr:save_doc(kz_doc:account_db(Doc), MSTeamsDoc) of
         {'ok', NewDoc} ->
             lager:info("softphone ~s migrated to ms_teams successfully", [DocId]),
@@ -688,3 +688,38 @@ maybe_add_hotdesk_current_id(#auth_user{doc=JObj}) ->
         [] -> [];
         [Id | _] -> [{<<"Hotdesk-Current-ID">>, Id}]
     end.
+
+%%------------------------------------------------------------------------------
+%% MS Teams
+%%------------------------------------------------------------------------------
+-spec ms_teams_device_defaults() -> kz_json:object().
+ms_teams_device_defaults() ->
+    Fns = [{fun kzd_devices:set_media/2, ms_teams_device_default_media()}
+          ,{fun kzd_devices:set_caller_id_options/2, ms_teams_device_default_caller_id_options()}
+          ,{fun kzd_devices:set_sip_ignore_completed_elsewhere/2, 'false'}
+          ,{fun kzd_devices:set_device_type/2, <<"teammate">>}
+          ],
+    kz_json:exec_first(Fns, kz_json:new()).
+
+-spec ms_teams_device_default_media() -> kz_json:object().
+ms_teams_device_default_media() ->
+    kz_json:from_list_recursive([{<<"audio">>
+                                 ,[{<<"codecs">>, [<<"PCMU">>, <<"PCMA">>]}]
+                                 }
+                                ,{<<"encryption">>
+                                 ,[{<<"enforce_security">>, 'true'}
+                                  ,{<<"methods">>, [<<"srtp">>]}
+                                  ]
+                                 }
+                                ,{<<"video">>
+                                 ,[{<<"codecs">>, []}]
+                                 }
+                                ,{<<"webrtc">>, 'false'}
+                                ]
+                               ,#{ascii_list_enforced => 'false'}
+                               ).
+
+-spec ms_teams_device_default_caller_id_options() -> kz_json:object().
+ms_teams_device_default_caller_id_options() ->
+    kz_json:from_list([{<<"outbound_privacy">>, <<"none">>}
+                      ]).
