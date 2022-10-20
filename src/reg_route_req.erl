@@ -21,7 +21,7 @@
 -spec init() -> 'ok'.
 init() -> 'ok'.
 
--spec handle_route_req(kz_json:object(), kz_term:proplist()) -> any().
+-spec handle_route_req(kz_json:object(), kz_term:proplist()) -> 'ok'.
 handle_route_req(JObj, _Props) ->
     'true' = kapi_route:req_v(JObj),
     kz_log:put_callid(JObj),
@@ -52,7 +52,6 @@ maybe_replay_route_req(JObj, CCVs, IP) ->
         {'error', _E} ->
             lager:debug("failed to find account information from IP ~s, not replaying route req", [IP])
     end.
-
 
 %%------------------------------------------------------------------------------
 %% @doc lookup auth by IP in cache/database and return the result

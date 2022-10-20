@@ -17,6 +17,8 @@
 
 -include("reg.hrl").
 
+-elvis([{elvis_style, no_debug_call, disable}]).
+
 -spec device_by_ip(kz_term:text()) -> 'ok'.
 device_by_ip(IP) when not is_binary(IP) ->
     device_by_ip(kz_term:to_binary(IP));
