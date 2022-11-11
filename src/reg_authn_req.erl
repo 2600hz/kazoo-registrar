@@ -404,17 +404,7 @@ perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
              ,fun check_request_user_agent/5 %% if not softphone, check user agent (integration service) is whitelisted.
              ,fun check_request_source_ip/5 %% check request's source IP is allowed and not denied to register.
              ],
-    lists:foldl(fun(F, Acc) -> F(Acc, DeviceType, SourceIP, UserAgent, MP) end
-               ,maybe_undefined_user_agent(Ret, UserAgent)
-               ,Checks
-               ).
-
--spec maybe_undefined_user_agent(auth_response(), kz_term:api_ne_binary()) -> auth_response().
-maybe_undefined_user_agent(_AuthResponse, 'undefined') ->
-    lager:debug("not user agent provided within the register request, denying registration"),
-    {'error', 'invalid_user_agent'};
-maybe_undefined_user_agent(AuthResponse, _UserAgent) ->
-    AuthResponse.
+    lists:foldl(fun(F, Acc) -> F(Acc, DeviceType, SourceIP, UserAgent, MP) end, Ret, Checks).
 
 %%------------------------------------------------------------------------------
 %% @doc Checks if an "integration" (MS Teams, residential, etc) device is trying to register
@@ -430,6 +420,10 @@ maybe_undefined_user_agent(AuthResponse, _UserAgent) ->
 %% @end
 %%------------------------------------------------------------------------------
 -spec check_integration_as_softphone(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
+check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, 'undefined', _CompiledRegex) ->
+    %% Per Luis Azedo, besides registrations, subscriptions are challenged as well, and usually the
+    %% UAs don't send user-agent for subscribe requests.
+    Ret;
 check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, UserAgent, CompiledRegex) ->
     lager:debug("checking if user agent (~s) is not from an integration service", [UserAgent]),
     case re:run(UserAgent, CompiledRegex, ['notempty']) of
@@ -494,6 +488,10 @@ do_migrate_softphone_to_ms_teams({'ok', _AuthUser}, MaxTries, MaxTries) ->
 -spec check_request_user_agent(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
 check_request_user_agent(Ret, <<"softphone">>, _SourceIP, _UserAgent, _CompiledRegex) ->
     %% Only check User Agent for integration services devices.
+    Ret;
+check_request_user_agent({'ok', _AuthUser} = Ret, _DeviceType, _SourceIP, 'undefined', _CompiledRegex) ->
+    %% Same as `check_integration_as_softphone/5' function clause when DeviceType=:=<<"softphone">> and
+    %% 'undefined'=:=UserAgent.
     Ret;
 check_request_user_agent({'ok', _AuthUser} = Ret, _DeviceType, _SourceIP, UserAgent, CompiledRegex) ->
     lager:debug("checking request's user agent (integration service) is allowed to register"),
