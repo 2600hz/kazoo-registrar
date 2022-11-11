@@ -447,7 +447,8 @@ maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser} = Ret, UserAgent) ->
 
 -spec maybe_migrate_softphone_to_ms_teams(auth_response(), kz_term:ne_binary(), boolean()) -> auth_response().
 maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser} = Ret, UserAgent, 'true') ->
-    lager:debug("migrating softphone (~s) to a proper MS-Teams device", [UserAgent]),
+    lager:debug("migrating softphone (~s) to a proper ~s device",
+                [UserAgent, kzd_devices:device_type(ms_teams_device_defaults())]),
     do_migrate_softphone_to_ms_teams(Ret);
 maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser}, UserAgent, 'false') ->
     lager:debug("trying to register '~s' integration device as a softphone, forbidden", [UserAgent]),
@@ -461,14 +462,16 @@ do_migrate_softphone_to_ms_teams(Ret) ->
 do_migrate_softphone_to_ms_teams({'ok', #auth_user{doc = Doc} = AU} = Ret, Try, MaxTries)
   when Try < MaxTries ->
     DocId = kz_doc:id(Doc),
-    MSTeamsDoc = kz_json:merge(Doc, ms_teams_device_defaults()),
+    MSTeamsDefaults = ms_teams_device_defaults(),
+    MSTeamsType = kzd_devices:device_type(MSTeamsDefaults),
+    MSTeamsDoc = kz_json:merge(Doc, MSTeamsDefaults),
     case kz_datamgr:save_doc(kz_doc:account_db(Doc), MSTeamsDoc) of
         {'ok', NewDoc} ->
-            lager:info("softphone ~s migrated to ms_teams successfully", [DocId]),
+            lager:info("softphone ~s migrated to ~s successfully", [DocId, MSTeamsType]),
             {'ok', AU#auth_user{doc = NewDoc}};
         Err ->
-            lager:debug("(~p/~p) failed to migrate softphone ~s to ms_teams with error: ~p",
-                        [Try+1, MaxTries, DocId, Err]),
+            lager:debug("(~p/~p) failed to migrate softphone ~s to ~s with error: ~p",
+                        [Try+1, MaxTries, DocId, MSTeamsType, Err]),
             %% Teammate may try to register (migreate) all the devices at the same time because it
             %% performs registrations every once in a while, so sleeping at random times may give the
             %% db a rest between migrations.
@@ -476,12 +479,13 @@ do_migrate_softphone_to_ms_teams({'ok', #auth_user{doc = Doc} = AU} = Ret, Try, 
             do_migrate_softphone_to_ms_teams(Ret, Try+1, MaxTries)
     end;
 do_migrate_softphone_to_ms_teams({'ok', _AuthUser}, MaxTries, MaxTries) ->
-    lager:warning("unable to migrate softphone to ms_teams after ~p tries, forbidden registration", [MaxTries]),
+    lager:warning("unable to migrate softphone to ~s after ~p tries, forbidden registration",
+                  [kzd_devices:device_type(ms_teams_device_defaults()), MaxTries]),
     {'error', 'integration_as_softphone'}.
 
 %%------------------------------------------------------------------------------
 %% @doc If device_type=softphone and it is not an intent to use a softphone device
-%% register an integration service device, let it continue without checking UA.
+%% to register an integration service device, let it continue without checking UA.
 %%
 %% If not a softphone, it is an integration service device, check its UA matches
 %% any of the user agent regexes within the configuration.
@@ -509,9 +513,9 @@ check_request_user_agent({'error', _Reason} = AuthFailed, _DeviceType, _SourceIP
     AuthFailed.
 
 %%------------------------------------------------------------------------------
-%% @doc If user_auth was successful, device_type is "ms_teams" and source_ip is
-%% allowed and not on the denied list, allow the registration, deny the
-%% registration otherwise.
+%% @doc If user_auth was successful, and device_type is "teammate" and source_ip is
+%% allowed and not on the denied list, allow the registration, otherwise, deny the
+%% registration.
 %% @end
 %%------------------------------------------------------------------------------
 -spec check_request_source_ip(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
@@ -534,6 +538,10 @@ check_request_source_ip({'ok', _AuthUser} = Ret, DeviceType, SourceIP, _UserAgen
 check_request_source_ip({'error', _Reason} = AuthFailed, _DeviceType, _SourceIP, _UserAgent, _CompiledRegex) ->
     AuthFailed.
 
+%%------------------------------------------------------------------------------
+%% @doc Returns the ACL for the given Authorizing/Device Type.
+%% @end
+%%------------------------------------------------------------------------------
 -spec access_control(kz_term:ne_binary()) -> kz_json:object().
 access_control(AuthOrDeviceType) ->
     Default = kapps_config:get_json(?CONFIG_CAT
