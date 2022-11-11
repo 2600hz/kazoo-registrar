@@ -23,7 +23,9 @@
                                       ,{<<"ZRTP-Enrollment">>, 'true'}
                                       ]}
                         ]).
--define(INTEGRATION_DEVICE_TYPES, [<<"ms_teams">>]).
+-define(INTEGRATION_DEVICE_TYPES
+       ,kapps_config:get_ne_binaries(?CONFIG_CAT, <<"integration_device_types">>, [<<"teammate">>])
+       ).
 
 -spec init() -> 'ok'.
 init() -> 'ok'.
