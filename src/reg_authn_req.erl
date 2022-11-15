@@ -15,6 +15,7 @@
 -export([init/0
         ,handle_req/2
         ]).
+-export([get_auth_user/2]).
 
 -include("reg.hrl").
 
@@ -208,7 +209,7 @@ lookup_auth_user(Username, Realm, AuthnReq) ->
         {'error', _}=E -> E;
         {'ok', ViewResult} ->
             AuthUser = check_auth_user(ViewResult, Username, Realm, AuthnReq),
-            maybe_perform_integration_device_checks(AuthUser, ViewResult, AuthnReq)
+            maybe_perform_integration_device_checks(AuthUser, AuthnReq)
     end.
 
 -spec get_auth_user(kz_term:ne_binary(), kz_term:ne_binary()) ->
@@ -382,17 +383,17 @@ maybe_auth_method(AuthUser, _JObj, _Req, ?ANY_AUTH_METHOD)->
 %% IP needs to be whitelisted as well and not denied (request_source_ip).
 %% @end
 %%------------------------------------------------------------------------------
--spec maybe_perform_integration_device_checks(auth_response(), kz_json:object(), kapi_authn:req()) -> auth_response().
-maybe_perform_integration_device_checks({'ok', _AuthUser} = Ret, ViewResult, AuthnReq) ->
-    DeviceType = kzd_devices:device_type(kz_json:get_json_value(<<"doc">>, ViewResult)),
+-spec maybe_perform_integration_device_checks(auth_response(), kapi_authn:req()) -> auth_response().
+maybe_perform_integration_device_checks({'ok', #auth_user{doc=Doc}} = Ret, AuthnReq) ->
+    DeviceType = kzd_devices:device_type(Doc),
     case lists:member(DeviceType, [<<"softphone">> | ?INTEGRATION_DEVICE_TYPES]) of
         'false' ->
-            lager:debug("not a softphone device nor an integration service device, not need to run checks"),
+            lager:debug("not a softphone nor an integration-service device, not need to run checks"),
             Ret;
         'true' ->
             perform_integration_device_checks(Ret, AuthnReq, DeviceType)
     end;
-maybe_perform_integration_device_checks({'error', _Reason} = AuthFailed, _ViewResult, _AuthnReq) ->
+maybe_perform_integration_device_checks({'error', _Reason} = AuthFailed, _AuthnReq) ->
     AuthFailed.
 
 perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
@@ -423,8 +424,8 @@ perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
 %%------------------------------------------------------------------------------
 -spec check_integration_as_softphone(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
 check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, 'undefined', _CompiledRegex) ->
-    %% Per Luis Azedo, besides registrations, subscriptions are challenged as well, and usually the
-    %% UAs don't send user-agent for subscribe requests.
+    %% Besides registrations, subscriptions are challenged as well, and usually the UAs don't send
+    %% user-agent for subscribe requests.
     Ret;
 check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, UserAgent, CompiledRegex) ->
     lager:debug("checking if user agent (~s) is not from an integration service", [UserAgent]),
@@ -446,41 +447,17 @@ maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser} = Ret, UserAgent) ->
     maybe_migrate_softphone_to_ms_teams(Ret, UserAgent, ?MIGRATE_SOFTPHONE_TO_MS_TEAMS).
 
 -spec maybe_migrate_softphone_to_ms_teams(auth_response(), kz_term:ne_binary(), boolean()) -> auth_response().
-maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser} = Ret, UserAgent, 'true') ->
-    lager:debug("migrating softphone (~s) to a proper ~s device",
-                [UserAgent, kzd_devices:device_type(ms_teams_device_defaults())]),
-    do_migrate_softphone_to_ms_teams(Ret);
-maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser}, UserAgent, 'false') ->
-    lager:debug("trying to register '~s' integration device as a softphone, forbidden", [UserAgent]),
-    {'error', 'integration_as_softphone'}.
-
--spec do_migrate_softphone_to_ms_teams(auth_response()) -> auth_response().
-do_migrate_softphone_to_ms_teams(Ret) ->
-    do_migrate_softphone_to_ms_teams(Ret, 0, 3).
-
--spec do_migrate_softphone_to_ms_teams(auth_response(), 0..3, 0..3) -> auth_response().
-do_migrate_softphone_to_ms_teams({'ok', #auth_user{doc = Doc} = AU} = Ret, Try, MaxTries)
-  when Try < MaxTries ->
-    DocId = kz_doc:id(Doc),
-    MSTeamsDefaults = ms_teams_device_defaults(),
-    MSTeamsType = kzd_devices:device_type(MSTeamsDefaults),
-    MSTeamsDoc = kz_json:merge(Doc, MSTeamsDefaults),
-    case kz_datamgr:save_doc(kz_doc:account_db(Doc), MSTeamsDoc) of
+maybe_migrate_softphone_to_ms_teams({'ok', #auth_user{doc=Doc}=AuthUser}, _UserAgent, 'true') ->
+    lager:debug("migrating softphone (~s) to MS Teams integration device", [_UserAgent]),
+    case kazoo_endpoint_maintenance:migrate_softphone_to_ms_teams({'ok', Doc}) of
         {'ok', NewDoc} ->
-            lager:info("softphone ~s migrated to ~s successfully", [DocId, MSTeamsType]),
-            {'ok', AU#auth_user{doc = NewDoc}};
-        Err ->
-            lager:debug("(~p/~p) failed to migrate softphone ~s to ~s with error: ~p",
-                        [Try+1, MaxTries, DocId, MSTeamsType, Err]),
-            %% Teammate may try to register (migreate) all the devices at the same time because it
-            %% performs registrations every once in a while, so sleeping at random times may give the
-            %% db a rest between migrations.
-            timer:sleep(rand:uniform(200)), %% sleep between 1-200 milliseconds.
-            do_migrate_softphone_to_ms_teams(Ret, Try+1, MaxTries)
+            {'ok', AuthUser#auth_user{doc = NewDoc}};
+        {'error', _Err} ->
+            lager:info("failed to migrate device: ~p", [_Err]),
+            {'error', 'integration_as_softphone'}
     end;
-do_migrate_softphone_to_ms_teams({'ok', _AuthUser}, MaxTries, MaxTries) ->
-    lager:warning("unable to migrate softphone to ~s after ~p tries, forbidden registration",
-                  [kzd_devices:device_type(ms_teams_device_defaults()), MaxTries]),
+maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser}, _UserAgent, 'false') ->
+    lager:debug("trying to register '~s' integration device as a softphone, forbidden", [_UserAgent]),
     {'error', 'integration_as_softphone'}.
 
 %%------------------------------------------------------------------------------
@@ -696,38 +673,3 @@ maybe_add_hotdesk_current_id(#auth_user{doc=JObj}) ->
         [] -> [];
         [Id | _] -> [{<<"Hotdesk-Current-ID">>, Id}]
     end.
-
-%%------------------------------------------------------------------------------
-%% MS Teams
-%%------------------------------------------------------------------------------
--spec ms_teams_device_defaults() -> kz_json:object().
-ms_teams_device_defaults() ->
-    Fns = [{fun kzd_devices:set_media/2, ms_teams_device_default_media()}
-          ,{fun kzd_devices:set_caller_id_options/2, ms_teams_device_default_caller_id_options()}
-          ,{fun kzd_devices:set_sip_ignore_completed_elsewhere/2, 'false'}
-          ,{fun kzd_devices:set_device_type/2, <<"teammate">>}
-          ],
-    kz_json:exec_first(Fns, kz_json:new()).
-
--spec ms_teams_device_default_media() -> kz_json:object().
-ms_teams_device_default_media() ->
-    kz_json:from_list_recursive([{<<"audio">>
-                                 ,[{<<"codecs">>, [<<"PCMU">>, <<"PCMA">>]}]
-                                 }
-                                ,{<<"encryption">>
-                                 ,[{<<"enforce_security">>, 'true'}
-                                  ,{<<"methods">>, [<<"srtp">>]}
-                                  ]
-                                 }
-                                ,{<<"video">>
-                                 ,[{<<"codecs">>, []}]
-                                 }
-                                ,{<<"webrtc">>, 'false'}
-                                ]
-                               ,#{ascii_list_enforced => 'false'}
-                               ).
-
--spec ms_teams_device_default_caller_id_options() -> kz_json:object().
-ms_teams_device_default_caller_id_options() ->
-    kz_json:from_list([{<<"outbound_privacy">>, <<"none">>}
-                      ]).
