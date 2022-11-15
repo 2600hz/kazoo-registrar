@@ -424,8 +424,7 @@ perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
 %%------------------------------------------------------------------------------
 -spec check_integration_as_softphone(auth_response(), kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary(), binary()) -> auth_response().
 check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, 'undefined', _CompiledRegex) ->
-    %% Besides registrations, subscriptions are challenged as well, and usually the UAs don't send
-    %% user-agent for subscribe requests.
+    %% User-Agent is not a required header, so it may be missing in some requests.
     Ret;
 check_integration_as_softphone({'ok', _AuthUser} = Ret, <<"softphone">>, _SourceIP, UserAgent, CompiledRegex) ->
     lager:debug("checking if user agent (~s) is not from an integration service", [UserAgent]),
