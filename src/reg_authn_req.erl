@@ -448,7 +448,7 @@ maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser} = Ret, UserAgent) ->
 -spec maybe_migrate_softphone_to_ms_teams(auth_response(), kz_term:ne_binary(), boolean()) -> auth_response().
 maybe_migrate_softphone_to_ms_teams({'ok', #auth_user{doc=Doc}=AuthUser}, _UserAgent, 'true') ->
     lager:debug("migrating softphone (~s) to MS Teams integration device", [_UserAgent]),
-    case kazoo_endpoint_maintenance:migrate_softphone_to_ms_teams({'ok', Doc}) of
+    case kapps_maintenance:migrate_softphone_to_ms_teams({'ok', Doc}) of
         {'ok', NewDoc} ->
             {'ok', AuthUser#auth_user{doc = NewDoc}};
         {'error', _Err} ->
