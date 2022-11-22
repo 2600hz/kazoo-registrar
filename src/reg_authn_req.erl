@@ -459,13 +459,10 @@ maybe_migrate_softphone_to_ms_teams({'ok', _AuthUser}, _UserAgent, 'false') ->
     lager:debug("trying to register '~s' integration device as a softphone, forbidden", [_UserAgent]),
     {'error', 'integration_as_softphone'}.
 
--spec do_migrate_softphone_to_ms_teams({'ok', kz_json:object()} | {'error', any()}) ->
+-spec do_migrate_softphone_to_ms_teams({'ok', kz_json:object()}) ->
           {'ok', kz_json:object()} | {'error', any()}.
 do_migrate_softphone_to_ms_teams({'ok', _DevDoc} = Dev) ->
-    do_migrate_softphone_to_ms_teams(Dev, 0, 3);
-do_migrate_softphone_to_ms_teams({'error', _Err} = Error) ->
-    lager:debug("failed to load device's document from db: ~p", [Error]),
-    Error.
+    do_migrate_softphone_to_ms_teams(Dev, 0, 3).
 
 -spec do_migrate_softphone_to_ms_teams({'ok', kz_json:object()}, 0..3, 0..3) ->
           {'ok', kz_json:object()} | {'error', 'unable_to_migrate'}.
