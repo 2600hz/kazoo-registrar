@@ -401,7 +401,7 @@ perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
     SourceIP = kz_json:get_ne_binary_value(<<"Orig-IP">>, AuthnReq),
     UserAgent = kz_json:get_ne_binary_value(<<"User-Agent">>, AuthnReq),
     UARegexes = kapps_config:get_ne_binaries(?CONFIG_CAT, <<"integrations_user_agent_regexes">>, []),
-    {'ok', MP} = re:compile(kz_binary:join(UARegexes, <<"|">>)), %% <<"regex1|regex2|regexn">> before regex compilation
+    {'ok', MP} = re:compile(kz_binary:join(UARegexes, <<"|">>)), %% Results in something like {ok, <<"regex1|regex2|regexn">>}.
     %% If any of the checks fail, the remaining ones are not executed.
     Checks = [fun check_integration_as_softphone/5 %% if integration_as_softphone, maybe migrate, maybe forbid registration.
              ,fun check_request_user_agent/5 %% if not softphone, check user agent (integration service) is whitelisted.
@@ -410,8 +410,8 @@ perform_integration_device_checks(Ret, AuthnReq, DeviceType) ->
     lists:foldl(fun(F, Acc) -> F(Acc, DeviceType, SourceIP, UserAgent, MP) end, Ret, Checks).
 
 %%------------------------------------------------------------------------------
-%% @doc Checks if an "integration" (MS Teams, residential, etc) device is trying to register
-%% as a softphone device which is forbidden.
+%% @doc Checks if credentials from a softphone device are being used to REGISTER an "integration"
+%% (MS Teams, residential, etc) device, which is forbidden.
 %%
 %% `NOTE': Temporarily (this exception may be removed in the future) maybe allowing this behavior,
 %% depends on ?MIGRATE_SOFTPHONE_TO_MS_TEAMS configuration value.
