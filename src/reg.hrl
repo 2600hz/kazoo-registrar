@@ -42,6 +42,7 @@
 -define(ANY_AUTH_METHOD, _ ).
 
 -define(RESOURCE_TYPES_HANDLED, [<<"audio">>, <<"video">>, <<"sms">>]).
+-define(MIGRATE_SOFTPHONE_TO_MS_TEAMS, kapps_config:get_boolean(?CONFIG_CAT, <<"migrate_softphone_to_ms_teams">>, 'false')).
 
 -define(REG_HRL, 'true').
 -endif.
