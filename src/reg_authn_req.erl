@@ -17,6 +17,10 @@
         ]).
 -export([get_auth_user/2]).
 
+-ifdef(TEST).
+-export([maybe_check_emergency_address/3]).
+-endif.
+
 -include("reg.hrl").
 
 -define(ENCRYPTION_MAP, [{<<"srtp">>, [{<<"RTP-Secure-Media">>, 'true'}]}
@@ -27,6 +31,9 @@
 -define(INTEGRATION_DEVICE_TYPES
        ,kapps_config:get_ne_binaries(?CONFIG_CAT, <<"integration_device_types">>, [<<"teammate">>])
        ).
+-define(CHECK_DEVICE_EMERGENCY_ADDRESS
+       ,kapps_config:get_boolean(?CONFIG_CAT, <<"should_check_device_emergency_address">>, 'false')
+       ).
 
 -spec init() -> 'ok'.
 init() -> 'ok'.
@@ -36,9 +43,7 @@ handle_req(AuthnReq, _Props) ->
     'true' = kapi_authn:req_v(AuthnReq),
     _ = kz_log:put_callid(AuthnReq),
     Realm = kapi_authn:get_auth_realm(AuthnReq),
-    case kz_network_utils:is_ipv4(Realm)
-        orelse kz_network_utils:is_ipv6(Realm)
-    of
+    case kz_network_utils:is_ip(Realm) of
         'true' ->
             lager:debug("realm is an IP address (~s) : skipping", [Realm]);
         'false' ->
@@ -209,8 +214,24 @@ lookup_auth_user(Username, Realm, AuthnReq) ->
         {'error', _}=E -> E;
         {'ok', ViewResult} ->
             AuthUser = check_auth_user(ViewResult, Username, Realm, AuthnReq),
-            maybe_perform_integration_device_checks(AuthUser, AuthnReq)
+            maybe_run_checks(AuthUser, AuthnReq)
     end.
+
+-spec maybe_run_checks(auth_response(), kapi_authn:req()) -> auth_response().
+maybe_run_checks({'error', _} = AuthFailed, _AuthnReq) ->
+    AuthFailed;
+maybe_run_checks(AuthResp, AuthnReq) ->
+    maybe_run_checks(AuthResp, AuthnReq, kz_json:get_ne_binary_value(<<"Method">>, AuthnReq)).
+
+-spec maybe_run_checks(auth_response(), kapi_authn:req(), kz_term:ne_binary()) -> auth_response().
+maybe_run_checks(AuthResp, AuthnReq, <<"REGISTER">>) ->
+    %% Checks to be run only for REGISTER requests.
+    Checks = [fun maybe_check_emergency_address/2
+             ,fun maybe_perform_integration_device_checks/2
+             ],
+    lists:foldl(fun(Check, Acc) -> Check(Acc, AuthnReq) end, AuthResp, Checks);
+maybe_run_checks(AuthResp, _AuthnReq, _) ->
+    AuthResp.
 
 -spec get_auth_user(kz_term:ne_binary(), kz_term:ne_binary()) ->
           {'ok', kz_json:object()} |
@@ -373,6 +394,23 @@ maybe_auth_method(AuthUser, JObj, AuthnReq, ?GSM_ANY_METHOD)->
      );
 maybe_auth_method(AuthUser, _JObj, _Req, ?ANY_AUTH_METHOD)->
     {'ok', AuthUser}.
+
+-spec maybe_check_emergency_address(auth_response(), kapi_authn:req()) -> auth_response().
+maybe_check_emergency_address(AuthResp, AuthnReq) ->
+    maybe_check_emergency_address(AuthResp, AuthnReq, ?CHECK_DEVICE_EMERGENCY_ADDRESS).
+
+%%------------------------------------------------------------------------------
+%% @doc If expected to be set, and not emergency address is found, deny registration.
+%% @end
+%%------------------------------------------------------------------------------
+-spec maybe_check_emergency_address(auth_response(), kapi_authn:req(), boolean()) -> auth_response().
+maybe_check_emergency_address({'ok', #auth_user{doc=Doc}} = Ret, _AuthnReq, 'true') ->
+    case kzd_devices:addresses_emergency(Doc) of
+        'undefined' -> {'error', 'missing_emergency_address'};
+        _Address -> Ret
+    end;
+maybe_check_emergency_address(AuthResp, _AuthnReq, _) ->
+    AuthResp.
 
 %%------------------------------------------------------------------------------
 %% @doc If device_type=softphone or any integration services device type, some
