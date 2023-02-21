@@ -12,10 +12,7 @@
 %%%-----------------------------------------------------------------------------
 -module(reg_authn_req).
 
--export([init/0
-        ,handle_req/2
-        ]).
--export([get_auth_user/2]).
+-export([handle_req/2]).
 
 -ifdef(TEST).
 -export([maybe_check_emergency_address/3]).
@@ -35,23 +32,68 @@
        ,kapps_config:get_boolean(?CONFIG_CAT, <<"should_check_device_emergency_address">>, 'false')
        ).
 
--spec init() -> 'ok'.
-init() -> 'ok'.
-
 -spec handle_req(kapi_authn:req(), kz_term:proplist()) -> 'ok'.
 handle_req(AuthnReq, _Props) ->
     'true' = kapi_authn:req_v(AuthnReq),
     _ = kz_log:put_callid(AuthnReq),
-    Realm = kapi_authn:get_auth_realm(AuthnReq),
+    handle_req_method(AuthnReq, kapi_authn:get_auth_user(AuthnReq), kapi_authn:get_auth_realm(AuthnReq), authn_method(AuthnReq)).
+
+authn_method(AuthnReq) ->
+    kz_json:get_ne_binary_value(<<"Method">>, AuthnReq, <<"REGISTER">>).
+
+handle_req_method(AuthnReq, Username, Realm, <<"MDN">>) ->
+    handle_authn_mdn(AuthnReq, Username, Realm);
+handle_req_method(AuthnReq, Username, Realm, <<"REGISTER">>) ->
     case kz_network_utils:is_ip(Realm) of
         'true' ->
             lager:debug("realm is an IP address (~s) : skipping", [Realm]);
         'false' ->
-            handle_authn_realm(AuthnReq, Realm)
+            handle_authn_register(AuthnReq, Username, Realm)
     end.
 
-handle_authn_realm(AuthnReq, Realm) ->
-    Username = kapi_authn:get_auth_user(AuthnReq),
+handle_authn_mdn(AuthnReq, MDN, Realm) ->
+    case knm_phone_number:fetch(MDN) of
+        {ok, Number} -> verify_mdn(AuthnReq, Number, MDN, Realm);
+        {error, _} -> send_auth_error(AuthnReq)
+    end.
+
+mdn_device_id(Number) ->
+    kz_json:get_ne_binary_value([<<"mobile">>, <<"device-id">>], knm_phone_number:doc(Number)).
+
+mdn_account_id(Number) ->
+    knm_phone_number:assigned_to(Number).
+
+mdn_is_active(Number) ->
+    knm_phone_number:state(Number) =:= <<"in_service">>.
+
+verify_mdn(AuthnReq, Number, Username, Realm) ->
+    case mdn_is_active(Number)
+        andalso mdn_account_id(Number)
+    of
+        false -> send_auth_error(AuthnReq);
+        undefined -> send_auth_error(AuthnReq);
+        AccountId -> verify_mdn_device(AuthnReq, Number, Username, Realm, AccountId)
+    end.
+
+verify_mdn_device(AuthnReq, Number, Username, Realm, AccountId) ->
+    case mdn_device_id(Number) of
+        undefined -> send_auth_error(AuthnReq);
+        DeviceId -> verify_mdn_endpoint(AuthnReq, Username, Realm, AccountId, DeviceId)
+    end.
+
+verify_mdn_endpoint(AuthnReq, Username, Realm, AccountId, DeviceId) ->
+    case kz_datamgr:open_doc(AccountId, DeviceId) of
+        {ok, EndpointDoc} ->
+            check_mdn_endpoint(AuthnReq, check_auth_user(EndpointDoc, Username, Realm, AuthnReq));
+        _Else -> send_auth_error(AuthnReq)
+    end.
+
+check_mdn_endpoint(AuthnReq, {'ok', #auth_user{}=AuthUser}) ->
+    send_auth_resp(AuthUser#auth_user{method = <<"mdn-trusted">>, password = kz_binary:rand_hex(5)}, AuthnReq);
+check_mdn_endpoint(AuthnReq, _Err) ->
+    send_auth_error(AuthnReq).
+
+handle_authn_register(AuthnReq, Username, Realm) ->
     lager:debug("trying to authenticate ~s@~s", [Username, Realm]),
     case lookup_auth_user(Username, Realm, AuthnReq) of
         {'ok', #auth_user{}=AuthUser} ->
@@ -160,11 +202,7 @@ get_presence_id(AccountDb, DeviceId) ->
 get_device_presence_id(AccountDb, DeviceId) ->
     case kz_datamgr:open_cache_doc(AccountDb, DeviceId) of
         {'error', _} -> 'undefined';
-        {'ok', DeviceJObj} ->
-            case kzd_devices:calculate_presence_id(DeviceJObj) of
-                'undefined' -> 'undefined';
-                PresenceId -> PresenceId
-            end
+        {'ok', DeviceJObj} -> kzd_devices:calculate_presence_id(DeviceJObj)
     end.
 
 -spec create_specific_ccvs(auth_user(), kz_term:ne_binary()) -> kz_term:proplist().
@@ -212,25 +250,23 @@ get_tel_uri(Number) -> <<"<tel:", Number/binary,">">>.
 lookup_auth_user(Username, Realm, AuthnReq) ->
     case get_auth_user(Username, Realm) of
         {'error', _}=E -> E;
-        {'ok', ViewResult} ->
-            AuthUser = check_auth_user(ViewResult, Username, Realm, AuthnReq),
-            maybe_run_checks(AuthUser, AuthnReq)
+        {'ok', AuthDoc} -> run_checks(AuthDoc, Username, Realm, AuthnReq)
     end.
 
--spec maybe_run_checks(auth_response(), kapi_authn:req()) -> auth_response().
-maybe_run_checks({'error', _} = AuthFailed, _AuthnReq) ->
-    AuthFailed;
-maybe_run_checks(AuthResp, AuthnReq) ->
-    maybe_run_checks(AuthResp, AuthnReq, kz_json:get_ne_binary_value(<<"Method">>, AuthnReq)).
+run_checks(AuthDoc, Username, Realm, AuthnReq) ->
+    case check_auth_user(AuthDoc, Username, Realm, AuthnReq) of
+        {'error', _} = AuthFailed -> AuthFailed;
+        {'ok', #auth_user{}} = AuthResp -> run_checks(AuthResp, AuthnReq, authn_method(AuthnReq))
+    end.
 
--spec maybe_run_checks(auth_response(), kapi_authn:req(), kz_term:ne_binary()) -> auth_response().
-maybe_run_checks(AuthResp, AuthnReq, <<"REGISTER">>) ->
+-spec run_checks(auth_response(), kapi_authn:req(), kz_term:ne_binary()) -> auth_response().
+run_checks(AuthResp, AuthnReq, <<"REGISTER">>) ->
     %% Checks to be run only for REGISTER requests.
     Checks = [fun maybe_check_emergency_address/2
              ,fun maybe_perform_integration_device_checks/2
              ],
     lists:foldl(fun(Check, Acc) -> Check(Acc, AuthnReq) end, AuthResp, Checks);
-maybe_run_checks(AuthResp, _AuthnReq, _) ->
+run_checks(AuthResp, _AuthnReq, _) ->
     AuthResp.
 
 -spec get_auth_user(kz_term:ne_binary(), kz_term:ne_binary()) ->
@@ -251,48 +287,40 @@ get_auth_user(Username, Realm) ->
             get_auth_user_in_account(Username, Realm, AccountDB)
     end.
 
+-spec use_aggregate() -> boolean().
+use_aggregate() ->
+    kapps_config:get_is_true(?CONFIG_CAT, <<"use_aggregate">>, 'true').
+
 -spec get_auth_user_in_agg(kz_term:ne_binary(), kz_term:ne_binary()) ->
           {'ok', kz_json:object()} |
           {'error', 'not_found'}.
 get_auth_user_in_agg(Username, Realm) ->
-    get_auth_user_in_agg(Username, Realm, kapps_config:get_is_true(?CONFIG_CAT, <<"use_aggregate">>, 'true')).
+    get_auth_user_in_agg(Username, Realm, use_aggregate()).
 
 get_auth_user_in_agg(_Username, _Realm, 'false') ->
     lager:debug("SIP credential aggregate db is disabled"),
     {'error', 'not_found'};
 get_auth_user_in_agg(Username, Realm, 'true') ->
-    ViewOptions = [{'key', [Realm, Username]}
-                  ,'include_docs'
-                  ],
-    case kz_datamgr:get_results(?KZ_SIP_DB, <<"credentials/lookup">>, ViewOptions) of
+    case kz_datamgr:get_result_doc(?KZ_SIP_DB, <<"credentials/lookup">>, [Realm, Username]) of
         {'error', _R} ->
             lager:warning("failed to look up SIP credentials ~p in aggregate", [_R]),
             {'error', 'not_found'};
-        {'ok', []} ->
-            lager:debug("~s@~s not found in aggregate", [Username, Realm]),
-            {'error', 'not_found'};
-        {'ok', [ViewResult|_]} ->
+        {'ok', Doc} ->
             lager:debug("~s@~s found in aggregate", [Username, Realm]),
-            {'ok', ViewResult}
+            {'ok', Doc}
     end.
 
 -spec get_auth_user_in_account(kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary()) ->
           {'ok', kz_json:object()} |
           {'error', 'not_found'}.
 get_auth_user_in_account(Username, Realm, AccountDB) ->
-    ViewOptions = [{'key', Username}
-                  ,'include_docs'
-                  ],
-    case kz_datamgr:get_results(AccountDB, <<"devices/sip_credentials">>, ViewOptions) of
+    case kz_datamgr:get_result_doc(AccountDB, <<"devices/sip_credentials">>, Username) of
         {'error', _R} ->
             lager:warning("failed to look up SIP credentials in ~s: ~p", [AccountDB, _R]),
             get_auth_user_in_agg(Username, Realm);
-        {'ok', []} ->
-            lager:debug("~s@~s not found in ~s", [Username, Realm, AccountDB]),
-            get_auth_user_in_agg(Username, Realm);
-        {'ok', [ViewResult|_]} ->
+        {'ok', Doc} ->
             lager:debug("~s@~s found in account db: ~s", [Username, Realm, AccountDB]),
-            {'ok', ViewResult}
+            {'ok', Doc}
     end.
 
 %%------------------------------------------------------------------------------
@@ -300,32 +328,30 @@ get_auth_user_in_account(Username, Realm, AccountDB) ->
 %% @end
 %%------------------------------------------------------------------------------
 -spec check_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
-check_auth_user(ViewResult, Username, Realm, AuthnReq) ->
-    Things = [{<<"account">>, get_account_id(ViewResult)}
-             ,{kz_json:get_value([<<"doc">>, <<"pvt_type">>], ViewResult), kz_doc:id(ViewResult)}
-             ,{<<"owner">>, kz_json:get_value([<<"doc">>, <<"owner_id">>], ViewResult)}
+check_auth_user(AuthDoc, Username, Realm, AuthnReq) ->
+    Things = [{<<"account">>, kz_doc:account_id(AuthDoc)}
+             ,{kz_doc:type(AuthDoc), kz_doc:id(AuthDoc)}
+             ,{<<"owner">>, kzd_devices:owner_id(AuthDoc)}
              ],
     case kapps_util:are_all_enabled(Things) of
         'true' ->
-            jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq);
+            auth_user(AuthDoc, Username, Realm, AuthnReq);
         {'false', Reason} ->
             lager:notice("rejecting authn because ~p", [Reason]),
             {'error', 'disabled'}
     end.
 
--spec jobj_to_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
-jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq) ->
-    SIPSettings = get_auth_value(ViewResult),
-    AuthDoc = kz_json:get_json_value(<<"doc">>, ViewResult),
+-spec auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
+auth_user(AuthDoc, Username, Realm, AuthnReq) ->
     Method = get_auth_method(AuthDoc),
     AuthUser = #auth_user{account_db = get_account_db(AuthDoc)
                          ,account_id = get_account_id(AuthDoc)
-                         ,authorizing_id = kz_doc:id(ViewResult)
+                         ,authorizing_id = kz_doc:id(AuthDoc)
                          ,authorizing_type = get_auth_type(AuthDoc)
                          ,doc=AuthDoc
                          ,method = kz_term:to_lower_binary(Method)
                          ,owner_id = kzd_devices:owner_id(AuthDoc)
-                         ,password = kz_json:get_ne_binary_value(<<"password">>, SIPSettings, kz_binary:rand_hex(6))
+                         ,password = get_auth_password(AuthDoc)
                          ,realm = Realm
                          ,register_overwrite_notify = kzd_devices:register_overwrite_notify(AuthDoc)
                          ,request=AuthnReq
@@ -334,20 +360,28 @@ jobj_to_auth_user(ViewResult, Username, Realm, AuthnReq) ->
                          },
     maybe_auth_method(add_account_name(AuthUser), AuthDoc, AuthnReq, Method).
 
+get_auth_password(AuthDoc) ->
+    get_auth_password(kz_doc:type(AuthDoc), AuthDoc).
+
+get_auth_password(<<"device">>, AuthDoc) ->
+    kzd_devices:sip_password(AuthDoc, kz_binary:rand_hex(6));
+get_auth_password(<<"trunkserver">>, AuthDoc) ->
+    kzd_trunkserver:auth_password(AuthDoc, kz_binary:rand_hex(6)).
+
 -spec get_auth_type(kz_json:object()) -> kz_term:ne_binary().
 get_auth_type(AuthDoc) ->
-    case kz_json:get_first_defined([<<"endpoint_type">>, <<"device_type">>], AuthDoc) of
-        <<"mobile">> -> <<"mobile">>;
-        _ -> kz_doc:type(AuthDoc, <<"anonymous">>)
-    end.
+    get_auth_type(kz_doc:type(AuthDoc), AuthDoc).
 
--spec get_auth_value(kz_json:object()) -> kz_term:api_object().
-get_auth_value(JObj) ->
-    kz_json:get_first_defined([[<<"doc">>,<<"sip">>]
-                              ,<<"value">>
-                              ]
-                             ,JObj
-                             ).
+get_auth_type(<<"device">>, AuthDoc) ->
+    get_device_auth_type(AuthDoc);
+get_auth_type(_Other, AuthDoc) ->
+    kz_doc:type(AuthDoc, <<"anonymous">>).
+
+get_device_auth_type(AuthDoc) ->
+    case kzd_devices:device_type(AuthDoc) of
+        <<"mobile">> -> <<"mobile">>;
+        _Other -> <<"device">>
+    end.
 
 -spec add_account_name(auth_user()) -> auth_user().
 add_account_name(#auth_user{account_id=AccountId}=AuthUser) ->
@@ -364,13 +398,21 @@ add_account_name(#auth_user{account_id=AccountId}=AuthUser) ->
 -spec get_auth_method(kz_json:object() | kz_term:ne_binary()) -> kz_term:ne_binary().
 get_auth_method(?GSM_ANY_METHOD=M) when is_binary(M)-> <<"gsm">>;
 get_auth_method(M) when is_binary(M) -> M;
-get_auth_method(JObj) ->
-    kz_json:get_first_defined([[<<"gsm">>,<<"method">>]
-                              ,[<<"sip">>,<<"method">>]
-                              ]
-                             ,JObj
-                             ,<<"password">>
-                             ).
+get_auth_method(AuthDoc) ->
+    get_auth_method(kz_doc:type(AuthDoc), AuthDoc).
+
+get_auth_method(<<"device">>, AuthDoc) ->
+    get_auth_device_type_method(get_device_auth_type(AuthDoc), AuthDoc);
+get_auth_method(<<"trunkserver">>, AuthDoc) ->
+    kzd_trunkserver:auth_method(AuthDoc).
+
+get_auth_device_type_method(<<"mobile">>, AuthDoc) ->
+    case kz_json:get_ne_binary_value([<<"gsm">>, <<"method">>], AuthDoc) of
+        undefined -> kzd_devices:sip_method(AuthDoc);
+        GSMMethod -> GSMMethod
+    end;
+get_auth_device_type_method(_Other, AuthDoc) ->
+    kzd_devices:sip_method(AuthDoc).
 
 -spec maybe_auth_method(auth_user(), kz_json:object(), kapi_authn:req(), kz_term:ne_binary()) -> auth_response().
 maybe_auth_method(AuthUser, JObj, AuthnReq, ?GSM_ANY_METHOD)->
@@ -698,27 +740,11 @@ gsm_auth(AuthUser) -> {'ok', AuthUser}.
 %% @end
 %%------------------------------------------------------------------------------
 -spec get_account_id(kz_json:object()) -> kz_term:api_binary().
-get_account_id(JObj) ->
-    case get_account_db(JObj) of
-        'undefined' -> 'undefined';
-        AccountDb -> kzs_util:format_account_id(AccountDb)
-    end.
+get_account_id(AuthnDoc) -> kz_doc:account_id(AuthnDoc).
 
-%%------------------------------------------------------------------------------
-%% @doc
-%% @end
-%%------------------------------------------------------------------------------
 -spec get_account_db(kz_json:object()) -> kz_term:api_binary().
-get_account_db(JObj) ->
-    case kz_json:get_first_defined([[<<"doc">>, <<"pvt_account_db">>]
-                                   ,<<"pvt_account_db">>
-                                   ,[<<"doc">>, <<"pvt_account_id">>]
-                                   ,<<"pvt_account_id">>
-                                   ], JObj)
-    of
-        'undefined' -> 'undefined';
-        AccountDb -> kzs_util:format_account_db(AccountDb)
-    end.
+get_account_db(AuthnDoc) -> kz_doc:account_db(AuthnDoc).
+
 
 -spec remove_dashes(kz_term:ne_binary()) -> kz_term:ne_binary().
 remove_dashes(Bin) ->
