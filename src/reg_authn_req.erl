@@ -53,8 +53,8 @@ handle_req_method(AuthnReq, Username, Realm, <<"REGISTER">>) ->
 
 handle_authn_mdn(AuthnReq, MDN, Realm) ->
     case knm_phone_number:fetch(MDN) of
-        {ok, Number} -> verify_mdn(AuthnReq, Number, MDN, Realm);
-        {error, _} -> send_auth_error(AuthnReq)
+        {'ok', Number} -> verify_mdn(AuthnReq, Number, MDN, Realm);
+        {'error', _} -> send_auth_error(AuthnReq)
     end.
 
 mdn_device_id(Number) ->
@@ -70,20 +70,20 @@ verify_mdn(AuthnReq, Number, Username, Realm) ->
     case mdn_is_active(Number)
         andalso mdn_account_id(Number)
     of
-        false -> send_auth_error(AuthnReq);
-        undefined -> send_auth_error(AuthnReq);
+        'false' -> send_auth_error(AuthnReq);
+        'undefined' -> send_auth_error(AuthnReq);
         AccountId -> verify_mdn_device(AuthnReq, Number, Username, Realm, AccountId)
     end.
 
 verify_mdn_device(AuthnReq, Number, Username, Realm, AccountId) ->
     case mdn_device_id(Number) of
-        undefined -> send_auth_error(AuthnReq);
+        'undefined' -> send_auth_error(AuthnReq);
         DeviceId -> verify_mdn_endpoint(AuthnReq, Username, Realm, AccountId, DeviceId)
     end.
 
 verify_mdn_endpoint(AuthnReq, Username, Realm, AccountId, DeviceId) ->
     case kz_datamgr:open_doc(AccountId, DeviceId) of
-        {ok, EndpointDoc} ->
+        {'ok', EndpointDoc} ->
             check_mdn_endpoint(AuthnReq, check_auth_user(EndpointDoc, Username, Realm, AuthnReq));
         _Else -> send_auth_error(AuthnReq)
     end.
@@ -403,12 +403,12 @@ get_auth_method(AuthDoc) ->
 
 get_auth_method(<<"device">>, AuthDoc) ->
     get_auth_device_type_method(get_device_auth_type(AuthDoc), AuthDoc);
-get_auth_method(<<"trunkserver">>, AuthDoc) ->
+get_auth_method(<<"trunk_server">>, AuthDoc) ->
     kzd_trunkserver:auth_method(AuthDoc).
 
 get_auth_device_type_method(<<"mobile">>, AuthDoc) ->
     case kz_json:get_ne_binary_value([<<"gsm">>, <<"method">>], AuthDoc) of
-        undefined -> kzd_devices:sip_method(AuthDoc);
+        'undefined' -> kzd_devices:sip_method(AuthDoc);
         GSMMethod -> GSMMethod
     end;
 get_auth_device_type_method(_Other, AuthDoc) ->
