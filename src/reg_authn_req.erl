@@ -365,7 +365,7 @@ get_auth_password(AuthDoc) ->
 
 get_auth_password(<<"device">>, AuthDoc) ->
     kzd_devices:sip_password(AuthDoc, kz_binary:rand_hex(6));
-get_auth_password(<<"trunkserver">>, AuthDoc) ->
+get_auth_password(<<"trunk_server">>, AuthDoc) ->
     kzd_trunkserver:auth_password(AuthDoc, kz_binary:rand_hex(6)).
 
 -spec get_auth_type(kz_json:object()) -> kz_term:ne_binary().
