@@ -166,6 +166,7 @@ create_ccvs(#auth_user{doc=JObj
       ,{<<"Authorizing-Type">>, AuthorizingType}
       ,{<<"Owner-ID">>, OwnerId}
       ,{<<"Presence-ID">>, maybe_get_presence_id(AuthUser)}
+      ,{<<"Call-Info-Aliases">>, presence_aliases(AuthUser)}
       ,{<<"Pusher-Application">>, kz_json:get_value([<<"push">>, <<"Token-App">>], JObj)}
       ,{<<"Realm">>, Realm}
       ,{<<"Register-Overwrite-Notify">>, OverwriteNotify}
@@ -176,6 +177,29 @@ create_ccvs(#auth_user{doc=JObj
          ++ maybe_add_hotdesk_current_id(AuthUser)
         )
       ]).
+
+-spec presence_aliases(auth_user() | kz_json:object()) -> kz_term:api_ne_binaries().
+presence_aliases(#auth_user{account_id = AccountId, authorizing_id = EndpointId}) ->
+    case kz_endpoint:get(EndpointId, AccountId) of
+        {ok, Endpoint} -> presence_aliases(Endpoint);
+        _Other -> undefined
+    end;
+presence_aliases(Endpoint) ->
+    case lists:filtermap(fun presence_id/1, presence_ids(Endpoint)) of
+        [] -> undefined;
+        Filtered -> Filtered
+    end.
+
+-spec presence_ids(kz_json:object()) -> list().
+presence_ids(Endpoint) ->
+    [kzd_endpoint:presence_id(Endpoint)
+    | kzd_endpoint:presence_aliases(Endpoint, [])
+    ].
+
+presence_id(undefined) -> false;
+presence_id(PresenceId) ->
+    [User | _ ] = binary:split(PresenceId, <<"@">>),
+    {true, User}.
 
 -spec maybe_get_presence_id(auth_user()) -> kz_term:api_binary().
 maybe_get_presence_id(#auth_user{account_db=AccountDb
