@@ -166,7 +166,7 @@ create_ccvs(#auth_user{doc=JObj
       ,{<<"Authorizing-Type">>, AuthorizingType}
       ,{<<"Owner-ID">>, OwnerId}
       ,{<<"Presence-ID">>, maybe_get_presence_id(AuthUser)}
-      ,{<<"Call-Info-Aliases">>, presence_aliases(AuthUser)}
+      ,{<<"Presence-Monitoring-Aliases">>, presence_aliases(AuthUser)}
       ,{<<"Pusher-Application">>, kz_json:get_value([<<"push">>, <<"Token-App">>], JObj)}
       ,{<<"Realm">>, Realm}
       ,{<<"Register-Overwrite-Notify">>, OverwriteNotify}
@@ -193,7 +193,7 @@ presence_aliases(Endpoint) ->
 -spec presence_ids(kz_json:object()) -> list().
 presence_ids(Endpoint) ->
     [kzd_endpoint:presence_id(Endpoint)
-    | kzd_endpoint:presence_aliases(Endpoint, [])
+    | kzd_endpoint:presence_monitoring_aliases(Endpoint, [])
     ].
 
 presence_id(undefined) -> false;
