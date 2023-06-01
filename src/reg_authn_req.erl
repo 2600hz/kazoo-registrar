@@ -41,8 +41,8 @@ handle_req(AuthnReq, _Props) ->
 authn_method(AuthnReq) ->
     kz_json:get_ne_binary_value(<<"Method">>, AuthnReq, <<"REGISTER">>).
 
-handle_req_method(AuthnReq, Username, Realm, <<"MDN">>) ->
-    handle_authn_mdn(AuthnReq, Username, Realm);
+handle_req_method(AuthnReq, MDN, Realm, <<"MDN">>) ->
+    handle_authn_mdn(AuthnReq, MDN, Realm);
 handle_req_method(AuthnReq, Username, Realm, <<"REGISTER">>) ->
     case kz_network_utils:is_ip(Realm) of
         'true' ->
@@ -53,8 +53,14 @@ handle_req_method(AuthnReq, Username, Realm, <<"REGISTER">>) ->
 
 handle_authn_mdn(AuthnReq, MDN, Realm) ->
     case knm_phone_number:fetch(MDN) of
-        {'ok', Number} -> verify_mdn(AuthnReq, Number, MDN, Realm);
-        {'error', _} -> send_auth_error(AuthnReq)
+        {'ok', Number} ->
+            verify_mdn(AuthnReq, Number, MDN, Realm);
+        {'error', 'not_found'} ->
+            lager:info("mdn ~s not found", [MDN]),
+            send_auth_error(AuthnReq);
+        {'error', _Error} ->
+            lager:error("error while trying to fetch mdn ~s => ~p", [MDN, _Error]),
+            send_auth_error(AuthnReq)
     end.
 
 mdn_device_id(Number) ->
@@ -66,31 +72,46 @@ mdn_account_id(Number) ->
 mdn_is_active(Number) ->
     knm_phone_number:state(Number) =:= <<"in_service">>.
 
-verify_mdn(AuthnReq, Number, Username, Realm) ->
+verify_mdn(AuthnReq, Number, MDN, Realm) ->
     case mdn_is_active(Number)
         andalso mdn_account_id(Number)
     of
-        'false' -> send_auth_error(AuthnReq);
-        'undefined' -> send_auth_error(AuthnReq);
-        AccountId -> verify_mdn_device(AuthnReq, Number, Username, Realm, AccountId)
+        'false' ->
+            lager:info("mdn ~s is not active", [MDN]),
+            send_auth_error(AuthnReq);
+        'undefined' ->
+            lager:info("mdn ~s is not assigned", [MDN]),
+            send_auth_error(AuthnReq);
+        AccountId ->
+            verify_mdn_device(AuthnReq, Number, MDN, Realm, AccountId)
     end.
 
-verify_mdn_device(AuthnReq, Number, Username, Realm, AccountId) ->
+verify_mdn_device(AuthnReq, Number, MDN, Realm, AccountId) ->
     case mdn_device_id(Number) of
-        'undefined' -> send_auth_error(AuthnReq);
-        DeviceId -> verify_mdn_endpoint(AuthnReq, Username, Realm, AccountId, DeviceId)
+        'undefined' ->
+            lager:info("mdn ~s is not assigned to a device on account ~s", [MDN, AccountId]),
+            send_auth_error(AuthnReq);
+        DeviceId ->
+            verify_mdn_endpoint(AuthnReq, MDN, Realm, AccountId, DeviceId)
     end.
 
-verify_mdn_endpoint(AuthnReq, Username, Realm, AccountId, DeviceId) ->
+verify_mdn_endpoint(AuthnReq, MDN, Realm, AccountId, DeviceId) ->
     case kz_datamgr:open_doc(AccountId, DeviceId) of
         {'ok', EndpointDoc} ->
-            check_mdn_endpoint(AuthnReq, check_auth_user(EndpointDoc, Username, Realm, AuthnReq));
-        _Else -> send_auth_error(AuthnReq)
+            check_mdn_endpoint(AuthnReq, MDN, check_auth_user(EndpointDoc, MDN, Realm, AuthnReq));
+        {'error', 'not_found'} ->
+            lager:error("device ~s on account ~s not found for mdn ~s", [DeviceId, AccountId, MDN]),
+            send_auth_error(AuthnReq);
+        {'error', _Error} ->
+            lager:error("error reading mdn ~s device ~s/~s => ~p", [MDN, DeviceId, AccountId, _Error]),
+            send_auth_error(AuthnReq)
     end.
 
-check_mdn_endpoint(AuthnReq, {'ok', #auth_user{}=AuthUser}) ->
+check_mdn_endpoint(AuthnReq, _MDN, {'ok', #auth_user{}=AuthUser}) ->
+    lager:debug("sending mdn-trusted reply for mdn ~s", [_MDN]),
     send_auth_resp(AuthUser#auth_user{method = <<"mdn-trusted">>, password = kz_binary:rand_hex(5)}, AuthnReq);
-check_mdn_endpoint(AuthnReq, _Err) ->
+check_mdn_endpoint(AuthnReq, _MDN, _Err) ->
+    lager:info("error verifying mdn ~s => ~p", [_MDN, _Err]),
     send_auth_error(AuthnReq).
 
 handle_authn_register(AuthnReq, Username, Realm) ->
