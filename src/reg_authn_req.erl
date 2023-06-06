@@ -12,7 +12,9 @@
 %%%-----------------------------------------------------------------------------
 -module(reg_authn_req).
 
--export([handle_req/2]).
+-export([handle_req/2
+        ,get_auth_user/2
+        ]).
 
 -ifdef(TEST).
 -export([maybe_check_emergency_address/3]).
@@ -116,7 +118,7 @@ check_mdn_endpoint(AuthnReq, _MDN, _Err) ->
 
 handle_authn_register(AuthnReq, Username, Realm) ->
     lager:debug("trying to authenticate ~s@~s", [Username, Realm]),
-    case lookup_auth_user(Username, Realm, AuthnReq) of
+    case lookup_auth_user(AuthnReq, Username, Realm) of
         {'ok', #auth_user{}=AuthUser} ->
             send_auth_resp(AuthUser, AuthnReq);
         {'error', _R} ->
@@ -202,25 +204,25 @@ create_ccvs(#auth_user{doc=JObj
 -spec presence_aliases(auth_user() | kz_json:object()) -> kz_term:api_ne_binaries().
 presence_aliases(#auth_user{account_id = AccountId, authorizing_id = EndpointId}) ->
     case kz_endpoint:get(EndpointId, AccountId) of
-        {ok, Endpoint} -> presence_aliases(Endpoint);
-        _Other -> undefined
+        {'ok', Endpoint} -> presence_aliases(Endpoint);
+        _Other -> 'undefined'
     end;
 presence_aliases(Endpoint) ->
     case lists:filtermap(fun presence_id/1, presence_ids(Endpoint)) of
-        [] -> undefined;
+        [] -> 'undefined';
         Filtered -> Filtered
     end.
 
--spec presence_ids(kz_json:object()) -> list().
+-spec presence_ids(kz_json:object()) -> kz_term:ne_binaries().
 presence_ids(Endpoint) ->
     [kzd_endpoint:presence_id(Endpoint)
     | kzd_endpoint:presence_monitoring_aliases(Endpoint, [])
     ].
 
-presence_id(undefined) -> false;
+presence_id('undefined') -> 'false';
 presence_id(PresenceId) ->
     [User | _ ] = binary:split(PresenceId, <<"@">>),
-    {true, User}.
+    {'true', User}.
 
 -spec maybe_get_presence_id(auth_user()) -> kz_term:api_binary().
 maybe_get_presence_id(#auth_user{account_db=AccountDb
@@ -291,15 +293,15 @@ get_tel_uri(Number) -> <<"<tel:", Number/binary,">">>.
 %% @doc look up the user and realm in the database and return the result
 %% @end
 %%------------------------------------------------------------------------------
--spec lookup_auth_user(kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
-lookup_auth_user(Username, Realm, AuthnReq) ->
+-spec lookup_auth_user(kapi_authn:req(), kz_term:ne_binary(), kz_term:ne_binary()) -> auth_response().
+lookup_auth_user(AuthnReq, Username, Realm) ->
     case get_auth_user(Username, Realm) of
         {'error', _}=E -> E;
-        {'ok', AuthDoc} -> run_checks(AuthDoc, Username, Realm, AuthnReq)
+        {'ok', AuthDoc} -> run_checks(AuthnReq, Username, Realm, AuthDoc)
     end.
 
-run_checks(AuthDoc, Username, Realm, AuthnReq) ->
-    case check_auth_user(AuthDoc, Username, Realm, AuthnReq) of
+run_checks(AuthnReq, Username, Realm, AuthDoc) ->
+    case check_auth_user(AuthnReq, Username, Realm, AuthDoc) of
         {'error', _} = AuthFailed -> AuthFailed;
         {'ok', #auth_user{}} = AuthResp -> run_checks(AuthResp, AuthnReq, authn_method(AuthnReq))
     end.
@@ -325,11 +327,11 @@ get_auth_user(Username, Realm) ->
         {'multiples', []} ->
             lager:debug("failed to find realm ~s in accounts", [Realm]),
             get_auth_user_in_agg(Username, Realm);
-        {'multiples', [AccountDB|_]} ->
-            lager:debug("found multiple accounts by realm ~s, using first: ~s", [Realm, AccountDB]),
-            get_auth_user_in_account(Username, Realm, AccountDB);
-        {'ok', AccountDB} ->
-            get_auth_user_in_account(Username, Realm, AccountDB)
+        {'multiples', [AccountDb|_]} ->
+            lager:debug("found multiple accounts by realm ~s, using first: ~s", [Realm, AccountDb]),
+            get_auth_user_in_account(Username, Realm, AccountDb);
+        {'ok', AccountDb} ->
+            get_auth_user_in_account(Username, Realm, AccountDb)
     end.
 
 -spec use_aggregate() -> boolean().
@@ -358,13 +360,13 @@ get_auth_user_in_agg(Username, Realm, 'true') ->
 -spec get_auth_user_in_account(kz_term:ne_binary(), kz_term:ne_binary(), kz_term:ne_binary()) ->
           {'ok', kz_json:object()} |
           {'error', 'not_found'}.
-get_auth_user_in_account(Username, Realm, AccountDB) ->
-    case kz_datamgr:get_result_doc(AccountDB, <<"devices/sip_credentials">>, Username) of
+get_auth_user_in_account(Username, Realm, AccountDb) ->
+    case kz_datamgr:get_result_doc(AccountDb, <<"devices/sip_credentials">>, Username) of
         {'error', _R} ->
-            lager:warning("failed to look up SIP credentials in ~s: ~p", [AccountDB, _R]),
+            lager:warning("failed to look up SIP credentials in ~s: ~p", [AccountDb, _R]),
             get_auth_user_in_agg(Username, Realm);
         {'ok', Doc} ->
-            lager:debug("~s@~s found in account db: ~s", [Username, Realm, AccountDB]),
+            lager:debug("~s@~s found in account db: ~s", [Username, Realm, AccountDb]),
             {'ok', Doc}
     end.
 
@@ -372,22 +374,22 @@ get_auth_user_in_account(Username, Realm, AccountDB) ->
 %% @doc
 %% @end
 %%------------------------------------------------------------------------------
--spec check_auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
-check_auth_user(AuthDoc, Username, Realm, AuthnReq) ->
+-spec check_auth_user(kapi_authn:req(), kz_term:ne_binary(), kz_term:ne_binary(), kz_json:object()) -> auth_response().
+check_auth_user(AuthnReq, Username, Realm, AuthDoc) ->
     Things = [{<<"account">>, kz_doc:account_id(AuthDoc)}
              ,{kz_doc:type(AuthDoc), kz_doc:id(AuthDoc)}
              ,{<<"owner">>, kzd_devices:owner_id(AuthDoc)}
              ],
     case kapps_util:are_all_enabled(Things) of
         'true' ->
-            auth_user(AuthDoc, Username, Realm, AuthnReq);
+            auth_user(AuthnReq, Username, Realm, AuthDoc);
         {'false', Reason} ->
             lager:notice("rejecting authn because ~p", [Reason]),
             {'error', 'disabled'}
     end.
 
--spec auth_user(kz_json:object(), kz_term:ne_binary(), kz_term:ne_binary(), kapi_authn:req()) -> auth_response().
-auth_user(AuthDoc, Username, Realm, AuthnReq) ->
+-spec auth_user(kapi_authn:req(), kz_term:ne_binary(), kz_term:ne_binary(), kz_json:object()) -> auth_response().
+auth_user(AuthnReq, Username, Realm, AuthDoc) ->
     Method = get_auth_method(AuthDoc),
     AuthUser = #auth_user{account_db = get_account_db(AuthDoc)
                          ,account_id = get_account_id(AuthDoc)
@@ -738,24 +740,24 @@ maybe_msisdn(#auth_user{msisdn='undefined'
 maybe_msisdn(AuthUser) -> AuthUser.
 
 -spec maybe_msisdn_from_callflows(auth_user(), kz_term:ne_binary(), kz_term:ne_binary()) -> auth_user().
-maybe_msisdn_from_callflows(#auth_user{account_db=AccountDB}=AuthUser
+maybe_msisdn_from_callflows(#auth_user{account_db=AccountDb}=AuthUser
                            ,Type
                            ,Id
                            ) ->
     ViewOptions = [{'startkey', [Type, Id]}
                   ,{'endkey', [Type, Id, <<"9999999">>]}
                   ],
-    case kz_datamgr:get_results(AccountDB, <<"callflows/msisdn">>, ViewOptions) of
+    case kz_datamgr:get_results(AccountDb, <<"callflows/msisdn">>, ViewOptions) of
         {'error', _R} ->
-            lager:warning("failed to look up msisdn  in ~s: ~p", [AccountDB, _R]),
+            lager:warning("failed to look up msisdn  in ~s: ~p", [AccountDb, _R]),
             AuthUser;
         {'ok', []} ->
-            lager:debug("msisdn not found for ~s@~s in ~s", [Type, Id, AccountDB]),
+            lager:debug("msisdn not found for ~s@~s in ~s", [Type, Id, AccountDb]),
             AuthUser;
         {'ok', [User|_]} ->
             MSISDN = kz_json:get_value([<<"value">>,<<"msisdn">>], User),
             lager:debug("found msisdn ~s for ~s@~s in account db: ~s"
-                       ,[MSISDN, Type, Id, AccountDB]
+                       ,[MSISDN, Type, Id, AccountDb]
                        ),
             AuthUser#auth_user{msisdn=MSISDN}
     end.
