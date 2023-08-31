@@ -15,6 +15,28 @@ package:
     group: Productivity/Telephony
     url: 'https://2600hz.org/'
     vendor: 2600Hz
+  rockylinux8:
+    name: kazoo-application-registrar
+    summary: 'Kazoo core application'
+    description: |
+      Provides registration and authentication services.
+    app_name: registrar
+    license: 'MPL 2.0'
+    group: Productivity/Telephony
+    url: 'https://2600hz.org/'
+    vendor: 2600Hz
+    dist: .el8
+  rockylinux9:
+    name: kazoo-application-registrar
+    summary: 'Kazoo core application'
+    description: |
+      Provides registration and authentication services.
+    app_name: registrar
+    license: 'MPL 2.0'
+    group: Productivity/Telephony
+    url: 'https://2600hz.org/'
+    vendor: 2600Hz
+    dist: .el9
 metapackage:
   -
     name: meta-kazoo-applications
