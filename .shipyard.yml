@@ -1,21 +1,46 @@
----
 name: kazoo-application-registrar
+custom_files: null
+exposure: null
 base_branch: origin/5.1
-metapackage:
-  - name: meta-kazoo-applications
-    type: required
-    branch: '5.1'
-    package: kazoo-application-registrar
 base_core: kazoo
 template: kazoo-application.spec.tmpl
 package:
   centos7:
     name: kazoo-application-registrar
-    summary: Kazoo core application
+    summary: 'Kazoo core application'
     description: |
       Provides registration and authentication services.
     app_name: registrar
-    license: MPL 2.0
+    license: 'MPL 2.0'
     group: Productivity/Telephony
-    url: https://2600hz.org/
+    url: 'https://2600hz.org/'
     vendor: 2600Hz
+  rockylinux8:
+    name: kazoo-application-registrar
+    summary: 'Kazoo core application'
+    description: |
+      Provides registration and authentication services.
+    app_name: registrar
+    license: 'MPL 2.0'
+    group: Productivity/Telephony
+    url: 'https://2600hz.org/'
+    vendor: 2600Hz
+    dist: .el8
+  rockylinux9:
+    name: kazoo-application-registrar
+    summary: 'Kazoo core application'
+    description: |
+      Provides registration and authentication services.
+    app_name: registrar
+    license: 'MPL 2.0'
+    group: Productivity/Telephony
+    url: 'https://2600hz.org/'
+    vendor: 2600Hz
+    dist: .el9
+metapackage:
+  -
+    name: meta-kazoo-applications
+    type: required
+    branch: '5.1'
+    package: kazoo-application-registrar
+dependencies: null
