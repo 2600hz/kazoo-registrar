@@ -14,6 +14,7 @@
 -export([device_by_ip/1]).
 -export([set_listeners/1]).
 -export([register_views/0]).
+-export([migrate/0]).
 
 -include("reg.hrl").
 
@@ -38,12 +39,21 @@ pretty_print_device_by_ip([{Key, Value}|Props]) ->
     pretty_print_device_by_ip(Props).
 
 -spec set_listeners(integer() | binary()) -> 'ok'.
+set_listeners(Count) when is_integer(Count) ->
+    Count = registrar_config:set_listeners(Count),
+    registrar_shared_listener_sup:set_listeners(Count);
 set_listeners(Count) when is_binary(Count) ->
-    set_listeners(kz_term:to_integer(Count));
-set_listeners(Count) ->
-    _ = kapps_config:set(?CONFIG_CAT, <<"listeners">>, Count),
-    registrar_shared_listener_sup:set_listeners(Count).
+    set_listeners(kz_term:to_integer(Count)).
 
 -spec register_views() -> 'ok'.
 register_views() ->
     kz_datamgr:register_views_from_folder('registrar').
+
+-spec migrate() -> 'ok'.
+migrate() ->
+    case registrar_config:listeners() of
+        1 ->
+            io:format("updating config to start 10 listeners~n", []),
+            set_listeners(10);
+        _Count -> 'ok'
+    end.
