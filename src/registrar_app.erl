@@ -30,6 +30,7 @@
 start(_StartType, _StartArgs) ->
     _ = declare_exchanges(),
     kapps_maintenance:bind_and_register_views('registrar', 'registrar_maintenance', 'register_views'),
+    _ = kapps_maintenance:bind('migrate', 'registrar_maintenance', 'migrate'),
     registrar_sup:start_link().
 
 %%------------------------------------------------------------------------------
@@ -39,6 +40,7 @@ start(_StartType, _StartArgs) ->
 -spec stop(any()) -> any().
 stop(_State) ->
     _ = kapps_maintenance:unbind('register_views', 'registrar_maintenance', 'register_views'),
+    _ = kapps_maintenance:unbind('migrate', 'registrar_maintenance', 'migrate'),
     'ok'.
 
 
