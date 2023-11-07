@@ -46,7 +46,7 @@ start_link() ->
 
 -spec start_listeners() -> 'ok'.
 start_listeners() ->
-    start_listeners(kapps_config:get_integer(?CONFIG_CAT, <<"listeners">>, 1)).
+    start_listeners(registrar_config:listeners()).
 
 -spec start_listeners(integer()) -> 'ok'.
 start_listeners(Count) ->
@@ -61,6 +61,8 @@ stop_listeners(Count) ->
     _ = [supervisor:terminate_child(?SERVER, Pid) || Pid <- StopList],
     'ok'.
 
+%% @doc starts/stops registrar_shared_listener workers until Count
+%% processes are running
 -spec set_listeners(integer()) -> 'ok'.
 set_listeners(Count) ->
     case length(workers()) of
