@@ -1,5 +1,5 @@
 %%%-----------------------------------------------------------------------------
-%%% @copyright (C) 2011-2023, 2600Hz
+%%% @copyright (C) 2011-2024, 2600Hz
 %%% @doc Handle authn_req messages
 %%% @author James Aimonetti
 %%% @author Luis Azedo
@@ -45,7 +45,7 @@ authn_method(AuthnReq) ->
 
 handle_req_method(AuthnReq, MDN, Realm, <<"MDN">>) ->
     handle_authn_mdn(AuthnReq, MDN, Realm);
-handle_req_method(AuthnReq, Username, Realm, <<"REGISTER">>) ->
+handle_req_method(AuthnReq, Username, Realm, _Method) ->
     case kz_network_utils:is_ip(Realm) of
         'true' ->
             lager:debug("realm is an IP address (~s) : skipping", [Realm]);
@@ -308,13 +308,20 @@ run_checks(AuthnReq, Username, Realm, AuthDoc) ->
 
 -spec run_checks(auth_response(), kapi_authn:req(), kz_term:ne_binary()) -> auth_response().
 run_checks(AuthResp, AuthnReq, <<"REGISTER">>) ->
-    %% Checks to be run only for REGISTER requests.
+    %% Checks to be run for REGISTER requests.
+    run_checks(AuthResp, AuthnReq);
+run_checks(AuthResp, AuthnReq, <<"INVITE">>) ->
+    %% Checks to be run for INVITE requests.
+    run_checks(AuthResp, AuthnReq);
+run_checks(AuthResp, _AuthnReq, _) ->
+    AuthResp.
+
+-spec run_checks(auth_response(), kapi_authn:req()) -> auth_response().
+run_checks(AuthResp, AuthnReq) ->
     Checks = [fun maybe_check_emergency_address/2
              ,fun maybe_perform_integration_device_checks/2
              ],
-    lists:foldl(fun(Check, Acc) -> Check(Acc, AuthnReq) end, AuthResp, Checks);
-run_checks(AuthResp, _AuthnReq, _) ->
-    AuthResp.
+    lists:foldl(fun(Check, Acc) -> Check(Acc, AuthnReq) end, AuthResp, Checks).
 
 -spec get_auth_user(kz_term:ne_binary(), kz_term:ne_binary()) ->
           {'ok', kz_json:object()} |
