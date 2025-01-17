@@ -1,3 +1,4 @@
   - 'Registrar: Register For the Stars':
     - 'applications/registrar/doc/README.md'
     - 'applications/registrar/doc/maintenance.md'
+    - 'applications/registrar/doc/reg_authn_req.md'
